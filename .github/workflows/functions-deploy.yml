@@ -149,7 +149,6 @@ jobs:
       # `production` environment in repo Settings → Environments with the
       # SRE team as required reviewers.
       name: ${{ github.event.inputs.environment || 'staging' }}
-      url: https://console.firebase.google.com/project/${{ secrets.FIREBASE_PROJECT_ID }}/functions
 
     steps:
       - uses: actions/checkout@v4
