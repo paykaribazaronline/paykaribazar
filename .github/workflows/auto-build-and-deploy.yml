@@ -520,10 +520,8 @@ jobs:
     timeout-minutes: 45
     needs: [setup, prepare, test-security-analyze]
     if: |
-      (github.event.inputs.run_e2e == 'true' || env.RUN_E2E == 'true') &&
+      github.event.inputs.run_e2e == 'true' &&
       needs.setup.outputs.has_code_changes == 'true'
-    env:
-      RUN_E2E: 'false'
     steps:
       - uses: actions/checkout@v4
 
