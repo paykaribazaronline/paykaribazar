@@ -277,3 +277,6 @@ class _PrivateChatScreenState extends ConsumerState<PrivateChatScreen> {
           ),
         ],
       ),
+    );
+  }
+}

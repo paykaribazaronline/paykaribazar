@@ -327,3 +327,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 backgroundColor: AppStyles.primaryColor,
                 child:
                     Icon(Icons.send_rounded, color: Colors.white, size: 20))),
+      ],
+    ),
+  );
+}
