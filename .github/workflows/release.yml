@@ -111,7 +111,7 @@ jobs:
       - name: 🔍 Verify no compilation errors (FATAL on warning + error)
         # --fatal-warnings makes WARNINGs and ERRORs fatal but lets INFO-level
         # lints surface without blocking the release on stylistic nitpicks.
-        run: flutter analyze --fatal-warnings
+        run: flutter analyze --fatal-warnings --no-fatal-infos
 
       - name: 🧪 Run tests (FATAL)
         run: flutter test --coverage

@@ -449,7 +449,7 @@ jobs:
           # surface without blocking CI. The previous --fatal-infos flag was
           # too aggressive and blocked on Mockito-generated files that
           # drift from new SDK signatures.
-          flutter analyze $DIRS_TO_ANALYZE --fatal-warnings
+          flutter analyze $DIRS_TO_ANALYZE --fatal-warnings --no-fatal-infos
 
       - name: Run unit tests
         run: flutter test --coverage

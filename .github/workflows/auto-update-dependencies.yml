@@ -82,7 +82,7 @@ jobs:
         run: |
           # --fatal-warnings makes WARNINGs and ERRORs fatal but lets
           # INFO-level lints surface without blocking CI.
-          flutter analyze --fatal-warnings
+          flutter analyze --fatal-warnings --no-fatal-infos
 
       - name: Run tests
         if: steps.check_updates.outputs.has_updates == 'true'
