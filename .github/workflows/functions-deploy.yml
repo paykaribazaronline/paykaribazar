@@ -38,7 +38,11 @@ on:
           - production
 
 concurrency:
-  group: functions-deploy-${{ github.event.inputs.environment || 'staging' }}
+  # Key on `github.ref` (not on `inputs.environment`) so a manual staging
+  # dispatch and a manual production dispatch on the same ref can't run
+  # simultaneously — prevents the staging deploy from racing the production
+  # deploy for the same commit.
+  group: functions-deploy-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:

@@ -317,7 +317,7 @@ class CloudFunctionsClient {
     );
   }
 
-  Future<PaymentVerifyResult> verifyPayment({
+  Future<PaymentResult> verifyPayment({
     required PaymentProvider provider,
     required String paymentRefId,
     required String orderId,
@@ -327,7 +327,7 @@ class CloudFunctionsClient {
       'paymentRefId': paymentRefId,
       'orderId': orderId,
     });
-    return PaymentVerifyResult.fromJson(
+    return PaymentResult.fromJson(
       Map<String, dynamic>.from(res.data as Map),
       provider: provider,
     );

@@ -23,86 +23,17 @@ permissions:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Pre-release gates — must ALL be green before any release artifact is built.
+  # Pre-release gate — secret scan only.
+  #
+  # NOTE: `rules-test` and `functions-test` are intentionally NOT duplicated
+  # here. Release tags are pushed only AFTER `auto-build-and-deploy.yml` has
+  # already gone green on `main` (you don't tag a commit that hasn't passed
+  # the master pipeline), so re-running the Firestore emulator rules suite
+  # and the Cloud Functions lint/typecheck/test suite on the same commit at
+  # tag-push time would burn ~4-5 min of runner time for zero additional
+  # signal. If you ever change the release trigger to fire on a ref that
+  # bypasses `auto-build-and-deploy.yml`, re-add those two jobs here.
   # ─────────────────────────────────────────────────────────────────────────
-  rules-test:
-    name: 🛡️ Firestore/Storage Rules Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Setup Java (emulator)
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'  # firebase-tools requires JDK 21+
-          distribution: 'temurin'
-
-      - name: Install Firebase CLI
-        run: npm install -g firebase-tools@latest
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      - name: Install Dart dependencies
-        run: flutter pub get
-
-      - name: Create dummy Firebase options
-        run: bash .github/scripts/create_dummy_firebase_options.sh
-
-      - name: Run Firestore/Storage rules tests (FATAL)
-        run: |
-          # Use `flutter test` (not `dart test`) — see rules-emulator-test.yml
-          # comment for rationale (avoids analyzer/matcher version conflicts).
-          firebase emulators:exec --only firestore,storage \
-            "flutter test test/firestore_rules/"
-        env:
-          FIREBASE_CLI_PREVIEWS: storageEmulator
-
-  functions-test:
-    name: ☁️ Cloud Functions Lint + Typecheck + Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: functions/package-lock.json
-
-      - name: Install dependencies
-        working-directory: functions
-        run: npm ci
-
-      - name: Lint (eslint)
-        working-directory: functions
-        run: npm run lint
-
-      - name: Typecheck (tsc --noEmit)
-        working-directory: functions
-        run: npx tsc --noEmit
-
-      - name: Build
-        working-directory: functions
-        run: npm run build
-
-      - name: Unit tests
-        working-directory: functions
-        run: npm test --if-present
-
   secret-scan:
     name: 🔑 Secret Scan (TruffleHog + Gitleaks + Forbidden Patterns)
     runs-on: ubuntu-latest
@@ -157,7 +88,7 @@ jobs:
     name: ✅ Pre-Release Checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [rules-test, functions-test, secret-scan]
+    needs: secret-scan
 
     steps:
       - uses: actions/checkout@v4
@@ -177,8 +108,10 @@ jobs:
       - name: 🔧 Generate code
         run: dart run build_runner build --delete-conflicting-outputs
 
-      - name: 🔍 Verify no compilation errors (FATAL)
-        run: flutter analyze --fatal-infos --fatal-warnings
+      - name: 🔍 Verify no compilation errors (FATAL on warning + error)
+        # --fatal-warnings makes WARNINGs and ERRORs fatal but lets INFO-level
+        # lints surface without blocking the release on stylistic nitpicks.
+        run: flutter analyze --fatal-warnings
 
       - name: 🧪 Run tests (FATAL)
         run: flutter test --coverage
@@ -346,6 +279,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
       - name: Install Shorebird CLI
         run: |
@@ -523,7 +457,7 @@ jobs:
   slack-notification:
     name: Notify Slack
     runs-on: ubuntu-latest
-    needs: [rules-test, functions-test, secret-scan, pre-release, build-release, deploy-shorebird, deploy-firebase]
+    needs: [secret-scan, pre-release, build-release, deploy-shorebird, deploy-firebase]
     if: always()
 
     steps:

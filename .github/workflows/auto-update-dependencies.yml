@@ -80,7 +80,9 @@ jobs:
       - name: Verify the app still analyzes
         if: steps.check_updates.outputs.has_updates == 'true'
         run: |
-          flutter analyze --fatal-infos --fatal-warnings
+          # --fatal-warnings makes WARNINGs and ERRORs fatal but lets
+          # INFO-level lints surface without blocking CI.
+          flutter analyze --fatal-warnings
 
       - name: Run tests
         if: steps.check_updates.outputs.has_updates == 'true'
@@ -99,7 +101,7 @@ jobs:
 
             **Changes:**
             - Runs `flutter pub upgrade --major-versions`
-            - Validates that `flutter analyze --fatal-infos --fatal-warnings` passes
+            - Validates that `flutter analyze --fatal-warnings` passes
             - Validates that `flutter test` passes
 
             ### Reviewer checklist

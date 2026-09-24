@@ -19,8 +19,9 @@ on:
         required: false
         default: 'firestore,functions,auth,storage'
   schedule:
-    # Nightly 2 AM UTC full E2E sweep
-    - cron: '0 2 * * *'
+    # Nightly full E2E sweep — 4 AM UTC, offset from auto-build-and-deploy's
+    # 3 AM UTC nightly so the two pipelines don't contend for runners.
+    - cron: '0 4 * * *'
 
 concurrency:
   group: firebase-emulator-e2e

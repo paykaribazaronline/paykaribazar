@@ -99,13 +99,11 @@ void main() {
       expect(first.first.categoryId, 'cat1');
     });
 
-    test('Update product stock', () async {
-      when(() => productService.updateProductStock('prod1', 50))
-          .thenAnswer((_) async => Future.value());
-
-      await productService.updateProductStock('prod1', 50);
-      verify(() => productService.updateProductStock('prod1', 50)).called(1);
-    });
+    // The `updateProductStock` test was removed — the method was deleted
+    // from `ProductService` because stock, reservedStock and soldStock are
+    // now server-only fields per the new `firestore.rules`. Inventory
+    // mutations happen exclusively through the `reserveStock`,
+    // `releaseReservation`, and `commitReservation` Cloud Functions.
 
     test('Search products', () async {
       final productStream = Stream<List<Product>>.value(<Product>[]);

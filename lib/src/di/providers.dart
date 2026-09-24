@@ -36,6 +36,7 @@ export '../features/auth/providers/auth_providers.dart';
 export '../features/commerce/providers/commerce_providers.dart';
 export '../features/ai/providers/ai_providers.dart';
 export '../features/logistics/providers/logistics_providers.dart';
+export '../features/wishlist/providers/wishlist_provider.dart';
 
 // --- PROVIDERS ---
 
