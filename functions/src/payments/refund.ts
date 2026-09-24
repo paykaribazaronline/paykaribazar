@@ -21,7 +21,6 @@ import {
   db,
   assertAdmin,
   FieldValue,
-  Timestamp,
 } from "../admin";
 import {
   errInvalidArgument,
@@ -31,8 +30,8 @@ import {
   takaToPoisha,
 } from "../shared/security";
 import { recordAudit } from "../audit/auditLog";
-import { grantToken as bkashGrantToken } from "./bkash";
-import { httpClient } from "./_http";
+import { grantToken as bkashGrantToken, BKASH_BASE_URL } from "./bkash";
+import { httpClient, sanitise } from "./_http";
 
 type Provider = "bkash" | "nagad" | "sslcommerz" | "bank_transfer";
 
@@ -104,9 +103,7 @@ export const refundPayment = onCall(
         const token = await bkashGrantToken();
         const paymentID = String(payment.gatewayRef ?? payment.id);
         const res = await httpClient({
-          baseURL: process.env.BKASH_SANDBOX === "true"
-            ? "https://tokenized.sandbox.bka.sh/v1.2.0-beta"
-            : "https://tokenized.pay.bka.sh/v1.2.0-beta",
+          baseURL: BKASH_BASE_URL,
           headers: { Authorization: token },
         }).post("/payment/refund", {
           paymentID,
@@ -152,7 +149,10 @@ export const refundPayment = onCall(
         errFailedPrecondition(`Refunds not supported for provider ${provider}.`);
       }
     } catch (err) {
-      console.error("[refundPayment] provider call failed:", err);
+      // Axios errors carry the full request config (incl. `Authorization`
+      // header) and the gateway response body (which may include `trxID`,
+      // `refundTrxID`, masked card numbers). Sanitise before logging.
+      console.error("[refundPayment] provider call failed:", sanitise(err));
       refundStatus = "failed";
     }
 

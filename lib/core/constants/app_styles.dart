@@ -1,3 +1,18 @@
+// TODO(audit): DUPLICATE `AppStyles` class — there is a second, more
+// fully-featured `AppStyles` in `lib/src/utils/styles.dart` (with the
+// canonical brand teal `#008080`, dynamic config support, theme builders,
+// and Bengali font wiring). This legacy class (with `#00695C`) is the
+// source of an inconsistency: the only consumer is
+// `lib/src/features/admin/widgets/analytics_tab.dart`, which renders
+// teal-tinted cards in a slightly different shade than the rest of the
+// app. The minimal migration is to update `analytics_tab.dart`'s import
+// to `'../../../utils/styles.dart'` and replace `AppStyles.headingStyle` /
+// `AppStyles.subheadingStyle` / `AppStyles.bodyStyle` with the canonical
+// equivalents (`AppStyles.titleStyle(null, isDark:)`, etc.), then delete
+// this file. Deferred because the canonical AppStyles uses different
+// method signatures (functions taking a config Map vs. static getters),
+// so the migration is non-trivial.
+
 import 'package:flutter/material.dart';
 
 class AppStyles {

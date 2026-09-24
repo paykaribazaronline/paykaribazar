@@ -94,8 +94,19 @@ interface InitiateResult {
   paymentRefId: string;
 }
 
-/** Step 1: initiate. */
-export async function initiate(params: {
+/** Step 1: initiate.
+ *
+ * NOTE: the `params` argument is currently NOT used inside the body — the
+ * Nagad `/initialize` endpoint only requires the merchant-side challenge
+ * and returns a `callBackUrl` + `paymentReferenceId`. The actual payment
+ * amount, invoice ID, and user ID are forwarded to Nagad at the
+ * `/verify` step (see `verify()` below). The signature is kept stable so
+ * the caller at `nagadCreatePayment` doesn't need to special-case the
+ * Nagad provider. Renaming to `_params` to satisfy eslint's
+ * `no-unused-vars` rule with the `argsIgnorePattern: '^_'` convention.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function initiate(_params: {
   amountPoisha: number;
   invoiceId: string;
   userId: string;

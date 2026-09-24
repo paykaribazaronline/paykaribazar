@@ -1,4 +1,4 @@
-// TODO(prod): remove this class entirely once AI features are 100%
+// TODO(audit): remove this class entirely once AI features are 100%
 // backend-routed. All image-upload + prescription-analysis flows now go
 // through the `analyzePrescription` / image-upload callables (Task ID 9);
 // the only remaining uses of this class are legacy dev-environment paths

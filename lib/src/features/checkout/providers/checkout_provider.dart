@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -68,7 +70,14 @@ class CheckoutCancelled extends CheckoutState {
 
 class CheckoutNotifier extends StateNotifier<CheckoutState> {
   CheckoutNotifier(this._checkout, this._redirectHandler)
-      : super(const CheckoutIdle());
+      : super(const CheckoutIdle()) {
+    // Wire the redirect handler's deep-link callback to our own
+    // [onPaymentRedirect] method. Without this, even with `app_links`
+    // subscribed, the parsed redirect params would never reach the state
+    // machine (the `_callback` field in PaymentRedirectHandler would stay
+    // null and the link would be silently dropped).
+    _redirectHandler.onRedirect = onPaymentRedirect;
+  }
 
   final CheckoutService _checkout;
   final PaymentRedirectHandler _redirectHandler;
@@ -76,6 +85,15 @@ class CheckoutNotifier extends StateNotifier<CheckoutState> {
   /// In-flight checkout result, kept so [onPaymentRedirect] can call
   /// `verifyPayment` against the correct orderId/provider.
   CheckoutResult? _pending;
+
+  @override
+  void dispose() {
+    // Cancel the deep-link subscription so we don't leak the stream or
+    // deliver a redirect to a disposed notifier.
+    _redirectHandler.onRedirect = null;
+    unawaited(_redirectHandler.dispose());
+    super.dispose();
+  }
 
   Future<void> startCheckout(CheckoutRequest req) async {
     state = const CheckoutPricing();

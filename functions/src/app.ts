@@ -10,7 +10,20 @@ import { apiRouter, webhookRouter } from "./apiRouter";
 
 export const app = express();
 
-// Enable CORS for all origins (mobile apps, admin dashboard, web client)
+// TODO(audit): `cors({ origin: true, credentials: true })` reflects any
+// request origin back and allows credentialed (cookie / Authorization-header)
+// requests from any website. This is the Express surface used by Render /
+// Vercel (see `render.yaml` / `vercel.json`), NOT the GCP `onCall` surface
+// (which has its own CORS handling). Before promoting this Express surface
+// to production, restrict `origin` to the actual frontend hosts:
+//   origin: [
+//     "https://paykaribazar.web.app",
+//     "https://paykaribazar-admin.web.app",
+//     /^https:\/\/[a-z0-9-]+\.paykaribazar\.app$/,
+//   ]
+// Left as `true` here because the dev / staging customer + admin Flutter web
+// builds run on unpredictable preview URLs (Firebase Hosting dynamic
+// subdomains) and a hard allow-list would block them.
 app.use(
   cors({
     origin: true,

@@ -36,19 +36,21 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   secret-scan:
     name: 🔑 Secret Scan (TruffleHog + Gitleaks + Forbidden Patterns)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: TruffleHog
-        uses: trufflesecurity/trufflehog@main
+        # Pinned to the same version used by auto-build-and-deploy.yml —
+        # running security tools from `@main` is a supply-chain risk.
+        uses: trufflesecurity/trufflehog@v3.88.34
         with:
           path: ./
           base: ${{ github.event.repository.default_branch }}
@@ -86,12 +88,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   pre-release:
     name: ✅ Pre-Release Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 20
     needs: secret-scan
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 🦋 Setup Flutter
         uses: subosito/flutter-action@v2
@@ -136,15 +138,15 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-release:
     name: 🏗️ Build Release APKs (Customer & Admin)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 60
     needs: pre-release
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: ☕ Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '21'  # firebase-tools requires JDK 21+
           distribution: 'temurin'
@@ -247,7 +249,7 @@ jobs:
           echo "EOF" >> $GITHUB_ENV
 
       - name: 🎉 Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             release_apks/paykari_bazar_customer_*.apk
@@ -266,14 +268,14 @@ jobs:
 
   deploy-shorebird:
     name: Deploy via Shorebird (OTA)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 30
     needs: build-release
     env:
       SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_AUTH_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -304,12 +306,12 @@ jobs:
 
   deploy-firebase:
     name: Deploy to Firebase (Hosting & Rules)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 20
     needs: pre-release
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -338,6 +340,12 @@ jobs:
       - name: Deploy Firestore Rules
         run: firebase deploy --only firestore:rules --project=${{ secrets.FIREBASE_PROJECT_ID }} --token=${{ secrets.FIREBASE_TOKEN }}
 
+      # TODO(audit): `w9jds/firebase-action@master` is a supply-chain risk —
+      # it runs whatever code is on `master` at fetch time. Replace with a
+      # pinned tag (e.g. `@v2.4.0`) once the latest stable tag is verified, or
+      # replace this step with a direct `firebase deploy --only hosting` call
+      # (the only reason this third-party action is used is its token-refresh
+      # helper, which `--token=${{ secrets.FIREBASE_TOKEN }}` already covers).
       - name: Deploy Firebase Hosting
         uses: w9jds/firebase-action@master
         with:
@@ -347,14 +355,14 @@ jobs:
 
   deploy-google-play:
     name: Deploy to Google Play Store
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 30
     needs: build-release
     # Disabled - Google Play Console is not ready yet
     if: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # OIDC auth — Workload Identity Federation for Play uploads (no key file)
       - name: Auth to Google Cloud (OIDC)
@@ -365,7 +373,7 @@ jobs:
           service_account: ${{ secrets.GCP_PLAY_SERVICE_ACCOUNT }}
 
       - name: Download release builds
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: release-builds
 
@@ -399,18 +407,26 @@ jobs:
             --track internal \
             --json_key metadata/service_account.json
 
+  # TODO(audit): `create-github-release` is REDUNDANT — the `build-release`
+  # job above already creates the GitHub Release (see its "🎉 Create GitHub
+  # Release" step at softprops/action-gh-release). This job tries to download
+  # a `release-builds` workflow artifact that is NEVER uploaded (build-release
+  # attaches the APKs directly to the Release via `files:`). On a tag push,
+  # this job would either fail at the download step or create an empty
+  # duplicate release. Disabled pending removal; the build-release step is
+  # the canonical release path.
   create-github-release:
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 10
     needs: [build-release, deploy-shorebird, deploy-firebase]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: false && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: release-builds
 
@@ -443,7 +459,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             build/app/outputs/flutter-apk/customer-release.apk
@@ -456,7 +472,7 @@ jobs:
 
   slack-notification:
     name: Notify Slack
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     needs: [secret-scan, pre-release, build-release, deploy-shorebird, deploy-firebase]
     if: always()
 

@@ -23,11 +23,11 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   update-dependencies:
     name: 🆙 Update Flutter Dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -125,18 +125,18 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   update-npm-dependencies:
     name: 🆙 Update npm Dependencies (functions/)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'  # Node 22 LTS — Node 20 deprecated by GitHub Actions
           cache: 'npm'
           cache-dependency-path: functions/package-lock.json
 
@@ -158,7 +158,12 @@ jobs:
         run: |
           # `npm outdated` exits non-zero if anything is outdated.
           # We don't make it fatal (patch releases are fine) — but `npm audit` is.
-          npm audit --audit-level=moderate --omit=dev
+          # Per issue #3: threshold is `high` (not `moderate`) to avoid blocking
+          # on non-actionable transitive advisories like `uuid < 11.1.1` which
+          # come in via firebase-admin/gaxios and have no direct consumer path
+          # in our codebase. Moderate advisories are still reported (exit 0)
+          # but don't block the dependency-update PR.
+          npm audit --audit-level=high --omit=dev
 
       - name: Verify functions build
         working-directory: functions

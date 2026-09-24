@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/services/cloud_functions_client.dart';
@@ -82,12 +83,27 @@ class PaymentRedirectHandler {
     }
   }
 
-  /// Override in subclasses / tests to inject an `app_links` stream. The
-  /// production implementation lives behind a `lib/src/features/payments/
-  /// services/app_links_stream.dart` shim that imports `package:app_links`
-  /// only when the package is present (so the file compiles before the
-  /// pubspec override is applied).
-  Stream<Uri> _appLinksStream() => const Stream<Uri>.empty();
+  /// Returns the live deep-link stream from `package:app_links`.
+  ///
+  /// The previous implementation returned an empty stream and required a
+  /// separate `app_links_stream.dart` shim — the shim was never created, so
+  /// the redirect flow was non-functional. With `app_links ^6.1.1` now in
+  /// pubspec, we subscribe directly. Tests that want to stub the stream
+  /// should construct the handler with `usePlatformChannel: false` and
+  /// drive the `_onLink(Uri)` / `onRedirect` path manually.
+  Stream<Uri> _appLinksStream() {
+    try {
+      return AppLinks().uriLinkStream;
+    } catch (e) {
+      // AppLinks() can throw on platforms where the plugin is not wired
+      // (e.g. desktop in unit tests). Fall back to an empty stream so the
+      // caller still compiles and runs in dev.
+      if (kDebugMode) {
+        debugPrint('[PaymentRedirectHandler] app_links unavailable: $e');
+      }
+      return const Stream<Uri>.empty();
+    }
+  }
 
   void _onLink(Uri uri) {
     final params = <String, String>{};

@@ -118,16 +118,11 @@ final backupServiceProvider = Provider((ref) {
 
 // Role Simulator providers are exported from '../services/role_simulator_provider.dart'
 
-class WishlistNotifier extends StateNotifier<List<String>> {
-  WishlistNotifier() : super([]);
-  void toggle(String id) {
-    if (state.contains(id)) {
-      state = state.where((i) => i != id).toList();
-    } else {
-      state = [...state, id];
-    }
-  }
-}
+// NOTE: The legacy `WishlistNotifier extends StateNotifier<List<String>>`
+// class that previously lived here was removed — it was a never-finished
+// in-memory implementation superseded by `WishlistIdsNotifier` in
+// `features/wishlist/providers/wishlist_provider.dart` (re-exported above).
+// If you need a wishlist Notifier, use `wishlistProvider` / `WishlistIdsNotifier`.
 
 final productsProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
   final cacheService = getIt<CacheService>();
