@@ -7,7 +7,12 @@ import '../core/constants/paths.dart';
 import 'dart:async';
 import '../core/services/cache_service.dart';
 import 'package:flutter/foundation.dart';
-import '../services/role_simulator_provider.dart'; // Assuming this is a general service
+// Note: role_simulator_provider.dart is intentionally NOT re-exported here.
+// It's imported directly by auth_providers.dart and teams_tab.dart; re-exporting
+// it caused `simulatedUserUidProvider` to become ambiguous in consumer files
+// that import providers.dart and (transitively) auth_providers.dart.
+// If a consumer needs simulatedUserUidProvider, it should import
+// role_simulator_provider.dart directly.
 import '../core/firebase/firestore_service.dart';
 import '../core/firebase/firebase_billing_monitor.dart';
 import '../core/services/health_check_service.dart';
@@ -22,10 +27,34 @@ import '../services/chat_service.dart';
 import '../features/qibla/services/compass_service.dart';
 import '../features/ota/services/ota_service.dart';
 import '../services/backup_service.dart';
+import 'service_locator.dart';
+import '../features/ai/services/ai_service.dart';
+import '../features/ai/services/ai_automation_service.dart';
+import '../features/ai/services/api_quota_service.dart';
+import '../features/ai/services/forecasting_service.dart';
+import '../features/commerce/services/loyalty_service.dart';
+import '../features/logistics/services/delivery_service.dart';
+import '../services/fleet_service.dart';
 
 // --- MODELS & TYPES ---
 export '../core/constants/paths.dart';
+export '../features/commerce/domain/cart_model.dart' show CartState, CartItem;
+export '../features/ai/domain/ai_work_type.dart';
 export '../shared/services/update_service.dart' show UpdateStatus;
+export '../features/commerce/providers/cart_provider.dart'
+    show
+        businessRulesProvider,
+        cartProvider,
+        cartSubtotalProvider,
+        cartMinimumOrderValueProvider,
+        cartShortfallProvider,
+        cartDeliveryFeeProvider,
+        cartDiscountProvider,
+        cartPointsDiscountProvider,
+        cartTotalProvider,
+        CartNotifier,
+        CartState,
+        selectedAddressIdProvider;
 export '../services/language_provider.dart' show languageProvider;
 export '../services/nav_provider.dart' show navProvider;
 export '../services/theme_provider.dart' show themeProvider;
@@ -33,9 +62,6 @@ export '../core/exceptions/app_exceptions.dart';
 
 // --- FEATURE-SPECIFIC PROVIDERS (exported from their files) ---
 export '../features/auth/providers/auth_providers.dart';
-export '../features/commerce/providers/commerce_providers.dart';
-export '../features/ai/providers/ai_providers.dart';
-export '../features/logistics/providers/logistics_providers.dart';
 export '../features/wishlist/providers/wishlist_provider.dart';
 
 // --- PROVIDERS ---
@@ -44,24 +70,44 @@ export '../features/wishlist/providers/wishlist_provider.dart';
 final firebaseFirestoreProvider = Provider((ref) => FirebaseFirestore.instance);
 final firebaseAuthProvider = Provider((ref) => FirebaseAuth.instance);
 
-// Core Services (instantiated directly, assuming their dependencies are also providers)
-final firestoreService = Provider((ref) => FirestoreService(ref.watch(firebaseFirestoreProvider)));
+// Core Services wired through GetIt (registered in di/service_initializer.dart).
+// All these services have constructor dependencies that are themselves
+// resolved by GetIt, so we route every provider through getIt<T>() rather
+// than instantiating directly — this preserves the singleton semantics and
+// keeps constructor signature drift (e.g. SecretsService gaining a Map arg)
+// from breaking the provider layer.
+final firestoreService = Provider((ref) => getIt<FirestoreService>());
 final firestoreServiceProvider = firestoreService; // Alias
+
+// Services wired through GetIt (registered in di/service_initializer.dart)
+final aiServiceProvider = Provider<AIService>((ref) => getIt<AIService>());
+final aiAutomationProvider =
+    Provider<AiAutomationService>((ref) => getIt<AiAutomationService>());
+final apiQuotaServiceProvider =
+    Provider((ref) => getIt<ApiQuotaService>());
+final loyaltyServiceProvider =
+    Provider<LoyaltyService>((ref) => getIt<LoyaltyService>());
+final deliveryServiceProvider =
+    Provider((ref) => getIt<DeliveryService>());
+final fleetServiceProvider = Provider((ref) => getIt<FleetService>());
+final forecastingServiceProvider =
+    Provider((ref) => getIt<ForecastingService>());
 
 final notificationServiceProvider = Provider((ref) => NotificationService());
 final locationServiceProvider = Provider((ref) => LocationService());
 final billingMonitorProvider = Provider((ref) => FirebaseBillingMonitor());
-final secretsServiceProvider = Provider((ref) => SecretsService());
+final secretsServiceProvider = Provider((ref) => getIt<SecretsService>());
 final updateServiceProvider = Provider((ref) => UpdateService());
 final syncServiceProvider = Provider((ref) => SyncService());
 final noticeServiceProvider = Provider((ref) => NoticeService());
 final autoTranslationProvider = Provider((ref) => AutoTranslationService());
-final chatServiceProvider = Provider((ref) => ChatService(ref.watch(firebaseFirestoreProvider))); // Assuming ChatService needs Firestore
-final compassServiceProvider = Provider((ref) => CompassService());
+final chatServiceProvider = Provider((ref) => getIt<ChatService>());
+final compassServiceProvider = Provider((ref) => getIt<CompassService>());
 final otaServiceProvider = Provider((ref) => OTAService()); // OTAService might not need dependencies
-final mediaServiceProvider = Provider((ref) => MediaService());
-final userMediaServiceProvider = Provider((ref) => UserMediaService());
-final healthCheckProvider = Provider((ref) => HealthCheckService());
+final mediaServiceProvider = Provider((ref) => getIt<MediaService>());
+final userMediaServiceProvider = Provider((ref) => getIt<UserMediaService>());
+final healthCheckProvider = FutureProvider<Map<String, dynamic>>(
+    (ref) => getIt<HealthCheckService>().checkSystemHealth());
 
 final backupServiceProvider = Provider((ref) {
   final secrets = ref.watch(secretsServiceProvider);
@@ -69,8 +115,7 @@ final backupServiceProvider = Provider((ref) {
   return BackupService(masterKey.padRight(32).substring(0, 32));
 });
 
-// Role Simulator (assuming it's a general utility)
-final simulatedUserUidProvider = StateProvider<String?>((ref) => null);
+// Role Simulator providers are exported from '../services/role_simulator_provider.dart'
 
 class WishlistNotifier extends StateNotifier<List<String>> {
   WishlistNotifier() : super([]);
@@ -211,7 +256,77 @@ final appConfigProvider = StreamProvider<Map<String, dynamic>>((ref) {
 final appSettingsProvider = appConfigProvider;
 
 final loyaltySettingsProvider = StreamProvider<Map<String, dynamic>>((ref) {
-  return FirebaseFirestore.instance.doc(HubPaths.loyaltyDoc).snapshots().map((snap) => snap.data() ?? {}); // Moved to commerce_providers.dart
+  return FirebaseFirestore.instance.doc(HubPaths.loyaltyDoc).snapshots().map((snap) => snap.data() ?? {});
+});
+
+// --- AI / API QUOTA DASHBOARD PROVIDERS ---
+// Reads the per-key quota state stored at `settings/api_quota` so admin
+// dashboards can render usage / exhaustion without a separate callable.
+final apiQuotaStreamProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
+  return FirebaseFirestore.instance.collection('settings').doc('api_quota').snapshots().map((snap) {
+    final data = snap.data();
+    if (data == null || data['keys'] == null) return <Map<String, dynamic>>[];
+    return (data['keys'] as List).map((k) => Map<String, dynamic>.from(k)).toList();
+  });
+});
+
+/// Aggregated counts derived from [apiQuotaStreamProvider]. Exposed as a
+/// plain `Provider<Map>` (not `AsyncValue`) so dashboard widgets can read it
+/// directly without `.when(...)`.
+final apiQuotaSummaryProvider = Provider<Map<String, dynamic>>((ref) {
+  final quotas = ref.watch(apiQuotaStreamProvider).value ?? const [];
+  if (quotas.isEmpty) {
+    return {
+      'totalKeys': 0,
+      'activeKeys': 0,
+      'exhaustedKeys': 0,
+      'totalUsage': 0,
+      'totalLimit': 0,
+      'usagePercent': 0.0,
+    };
+  }
+
+  int totalUsage = 0;
+  int totalLimit = 0;
+  int activeKeys = 0;
+  int exhaustedKeys = 0;
+
+  for (final quota in quotas) {
+    final used = (quota['used_today'] ?? quota['currentUsage'] ?? 0) as num;
+    final limit = (quota['daily_limit'] ?? quota['limit'] ?? 0) as num;
+    totalUsage += used.toInt();
+    totalLimit += limit.toInt();
+    if ((quota['status'] ?? 'active') == 'exhausted') {
+      exhaustedKeys += 1;
+    } else {
+      activeKeys += 1;
+    }
+  }
+
+  return {
+    'totalKeys': quotas.length,
+    'activeKeys': activeKeys,
+    'exhaustedKeys': exhaustedKeys,
+    'totalUsage': totalUsage,
+    'totalLimit': totalLimit,
+    'usagePercent': totalLimit == 0 ? 0.0 : (totalUsage / totalLimit) * 100,
+  };
+});
+
+/// High-level AI provider status used by the system-health dashboard. Pulls
+/// both the [HealthCheckService] core telemetry and the [AIService] provider
+/// health snapshot, then collapses them into a single `Map<String, String>`
+/// the widget can render without any further transformation.
+final aiStatusProvider = FutureProvider<Map<String, String>>((ref) async {
+  final health = await getIt<HealthCheckService>().checkSystemHealth();
+  final aiHealth = await getIt<AIService>().performGlobalSystemCheck();
+  return {
+    'NEURAL': aiHealth['status']?.toString().toUpperCase() ?? 'OFFLINE',
+    'GATEWAY': health['firebaseLive'] == true ? 'ONLINE' : 'OFFLINE',
+    'KEYS': aiHealth['providers_active']?.toString() ?? '0',
+    'LOAD': aiHealth['neural_load']?.toString() ?? '0%',
+    'LATENCY': aiHealth['latency']?.toString() ?? '0ms',
+  };
 });
 
 final monthlyTopBuyersProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {

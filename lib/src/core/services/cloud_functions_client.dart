@@ -7,7 +7,6 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../../features/checkout/models/pricing_snapshot.dart';
-import '../../features/inventory/models/reservation_model.dart';
 import '../../features/payments/models/payment_init.dart';
 import '../../features/payments/models/payment_method.dart';
 import '../../features/payments/models/payment_result.dart';
@@ -42,57 +41,70 @@ class InsufficientStockException extends PaykariCloudFunctionException {
   final int? available;
   final int? wanted;
   InsufficientStockException(String message,
-      {this.productId, this.available, this.wanted, String? bangla})
+      {this.productId,
+      this.available,
+      this.wanted,
+      String? bangla,
+      Object? details})
       : super('insufficient-stock', message,
-            banglaMessage: bangla ?? 'পর্যাপ্ত পণ্য নেই। কিছুক্ষণ পর আবার চেষ্টা করুন।');
+            banglaMessage: bangla ?? 'পর্যাপ্ত পণ্য নেই। কিছুক্ষণ পর আবার চেষ্টা করুন।',
+            details: details);
 }
 
 class PricingExpiredException extends PaykariCloudFunctionException {
-  PricingExpiredException(String message)
+  PricingExpiredException(String message, {Object? details})
       : super('pricing-expired', message,
-            banglaMessage: 'দাম পরিবর্তন হয়েছে। আবার চেষ্টা করুন।');
+          banglaMessage: 'দাম পরিবর্তন হয়েছে। আবার চেষ্টা করুন।',
+          details: details);
 }
 
 class PricingSignatureInvalidException extends PaykariCloudFunctionException {
-  PricingSignatureInvalidException(String message)
+  PricingSignatureInvalidException(String message, {Object? details})
       : super('pricing-signature-invalid', message,
-            banglaMessage: 'অর্ডারটি পরিবর্তিত হয়েছে। আবার যাচাই করুন।');
+          banglaMessage: 'অর্ডারটি পরিবর্তিত হয়েছে। আবার যাচাই করুন।',
+          details: details);
 }
 
 class PaymentDeclinedException extends PaykariCloudFunctionException {
-  PaymentDeclinedException(String message, {String? bangla})
+  PaymentDeclinedException(String message, {String? bangla, Object? details})
       : super('payment-declined', message,
-            banglaMessage: bangla ?? 'পেমেন্ট ব্যর্থ হয়েছে।');
+          banglaMessage: bangla ?? 'পেমেন্ট ব্যর্থ হয়েছে।',
+          details: details);
 }
 
 class PermissionDeniedException extends PaykariCloudFunctionException {
-  PermissionDeniedException(String message, {String? bangla})
+  PermissionDeniedException(String message, {String? bangla, Object? details})
       : super('permission-denied', message,
-            banglaMessage: bangla ?? 'এই কাজের অনুমতি নেই।');
+          banglaMessage: bangla ?? 'এই কাজের অনুমতি নেই।',
+          details: details);
 }
 
 class NotFoundException extends PaykariCloudFunctionException {
-  NotFoundException(String message, {String? bangla})
+  NotFoundException(String message, {String? bangla, Object? details})
       : super('not-found', message,
-            banglaMessage: bangla ?? 'তথ্য পাওয়া যায়নি।');
+          banglaMessage: bangla ?? 'তথ্য পাওয়া যায়নি।',
+          details: details);
 }
 
 class InvalidArgumentException extends PaykariCloudFunctionException {
-  InvalidArgumentException(String message, {String? bangla})
+  InvalidArgumentException(String message, {String? bangla, Object? details})
       : super('invalid-argument', message,
-            banglaMessage: bangla ?? 'ভুল তথ্য দেওয়া হয়েছে।');
+          banglaMessage: bangla ?? 'ভুল তথ্য দেওয়া হয়েছে।',
+          details: details);
 }
 
 class FailedPreconditionException extends PaykariCloudFunctionException {
-  FailedPreconditionException(String message, {String? bangla})
+  FailedPreconditionException(String message, {String? bangla, Object? details})
       : super('failed-precondition', message,
-            banglaMessage: bangla ?? 'এই মুহূর্তে এই কাজটি সম্ভব নয়।');
+          banglaMessage: bangla ?? 'এই মুহূর্তে এই কাজটি সম্ভব নয়।',
+          details: details);
 }
 
 class CloudFunctionUnavailableException extends PaykariCloudFunctionException {
-  CloudFunctionUnavailableException(String message)
+  CloudFunctionUnavailableException(String message, {Object? details})
       : super('unavailable', message,
-            banglaMessage: 'সার্ভারে সাময়িক সমস্যা। কিছুক্ষণ পর আবার চেষ্টা করুন।');
+          banglaMessage: 'সার্ভারে সাময়িক সমস্যা। কিছুক্ষণ পর আবার চেষ্টা করুন।',
+          details: details);
 }
 
 /// ---------------------------------------------------------------------------
@@ -183,8 +195,10 @@ class CloudFunctionsClient {
   String get apiBaseUrl => _apiBaseUrl;
 
   /// Returns a callable bound to the backend region.
-  HttpsCallable _c(String name) =>
-      _functions.httpsCallable(name, region: _kFunctionsRegion);
+  HttpsCallable _c(String name) => _functions.httpsCallable(
+        name,
+        options: HttpsCallableOptions(region: _kFunctionsRegion),
+      );
 
   // ------------------------------- pricing ---------------------------------
 

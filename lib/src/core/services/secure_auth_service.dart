@@ -61,13 +61,13 @@ class SecureAuthService {
         return false;
       }
 
+      // local_auth 3.x removed `AuthenticationOptions` — its fields are now
+      // top-level named parameters on `authenticate()` directly. We pass
+      // `stickyAuth: true` so the auth state survives a lifecycle pause
+      // (e.g. the system showing the biometric prompt).
       return await _localAuth.authenticate(
         localizedReason: localizedReason,
-        options: AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: true,
-          useErrorDialogs: useErrorDialogs,
-        ),
+        stickyAuth: true,
       );
     } catch (e) {
       debugPrint('❌ Biometric authentication failed: $e');
@@ -82,9 +82,7 @@ class SecureAuthService {
     try {
       return await _localAuth.authenticate(
         localizedReason: localizedReason,
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-        ),
+        stickyAuth: true,
       );
     } catch (e) {
       debugPrint('❌ Sensitive operation authentication failed: $e');

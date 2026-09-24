@@ -7,8 +7,9 @@ import '../../../services/business_config_service.dart';
 import '../../../models/user_model.dart';
 import '../../../core/services/cloud_functions_client.dart';
 import '../../../features/checkout/models/pricing_snapshot.dart';
+import '../domain/cart_model.dart';
 
-export '../domain/cart_model.dart' show CartState;
+export '../domain/cart_model.dart' show CartState, CartItem;
 
 final cartServiceProvider = Provider((ref) => getIt<CartService>());
 

@@ -108,15 +108,26 @@ class PaymentRedirectHandler {
         params['payment_reference_id'] ??
         params['tran_id'] ??
         params['tranId'];
-    final orderId = params['orderId'] ?? params['order_id'];
+    // Fall back to the pending redirect's orderId / paymentMethod when the
+    // gateway doesn't echo them back in the redirect URL. Some gateways
+    // (e.g. SSLCommerz when the user cancels mid-flow) only return a status.
+    final pending = _pending;
+    final orderId = params['orderId'] ??
+        params['order_id'] ??
+        pending?.orderId ??
+        '';
     final status = params['status'] ??
         params['payment_status'] ??
         params['tran_status'];
 
+    // Once the redirect fires we no longer need the pending context — clear
+    // it so a stale pending redirect can't be matched against a later link.
+    _pending = null;
+
     _callback?.call({
-      'provider': provider ?? '',
+      'provider': provider ?? pending?.paymentMethod.wireName ?? '',
       'paymentRefId': paymentRefId ?? '',
-      'orderId': orderId ?? '',
+      'orderId': orderId,
       'status': status ?? '',
       // Pass through all original params so the notifier can inspect extras.
       ...params,

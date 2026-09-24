@@ -1,14 +1,14 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' hide Order;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:paykari_bazar/src/core/services/cloud_functions_client.dart';
 import 'package:paykari_bazar/src/features/commerce/services/order_service.dart';
 import 'package:paykari_bazar/src/features/payments/models/payment_method.dart';
-import 'package:paykari_bazar/src/models/order_model.dart';
+import 'package:paykari_bazar/src/models/order_model.dart' as app_models;
 
 class MockOrderService extends Mock implements OrderService {}
-class FakeOrder extends Fake implements Order {}
+class FakeOrder extends Fake implements app_models.Order {}
 
 // Lightweight mocks for the OrderService constructor dependencies — used by
 // the real-OrderService smoke test below. The Mock* types only need to
@@ -89,7 +89,7 @@ void main() {
     });
 
     test('Create order from model', () async {
-      final order = Order(
+      final order = app_models.Order(
         id: 'order-model-1',
         customerUid: 'user1',
         customerName: 'Test',
@@ -104,7 +104,7 @@ void main() {
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
-      when(() => orderService.createOrder(any<Order>()))
+      when(() => orderService.createOrder(any<app_models.Order>()))
           .thenAnswer((_) async => 'order-model-1');
 
       final result = await orderService.createOrder(order);
@@ -112,7 +112,7 @@ void main() {
     });
 
     test('Update order', () async {
-      final order = Order(
+      final order = app_models.Order(
         id: 'order-update-1',
         customerUid: 'user1',
         customerName: 'Test',
@@ -128,11 +128,11 @@ void main() {
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
-      when(() => orderService.updateOrder(any<Order>()))
+      when(() => orderService.updateOrder(any<app_models.Order>()))
           .thenAnswer((_) async => Future.value());
 
       await orderService.updateOrder(order);
-      verify(() => orderService.updateOrder(any<Order>())).called(1);
+      verify(() => orderService.updateOrder(any<app_models.Order>())).called(1);
     });
 
     test('Assign order to rider', () async {
@@ -152,7 +152,7 @@ void main() {
     });
 
     test('Get order by ID', () async {
-      final mockOrder = Order(
+      final mockOrder = app_models.Order(
         id: 'order123',
         customerUid: 'user1',
         customerName: 'Test User',

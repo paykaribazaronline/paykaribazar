@@ -2,9 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/services/cloud_functions_client.dart';
-import '../../payments/models/payment_init.dart';
 import '../../payments/models/payment_method.dart';
-import '../../payments/models/payment_result.dart';
 import '../../payments/services/payment_redirect_handler.dart';
 import '../models/pricing_snapshot.dart';
 import '../services/checkout_service.dart';
@@ -162,7 +160,7 @@ class CheckoutNotifier extends StateNotifier<CheckoutState> {
       if (result.success) {
         state = CheckoutSuccess(pending.orderId, result);
       } else {
-        state = CheckoutFailed(
+        state = const CheckoutFailed(
           'Payment not yet verified — please wait while the server confirms.',
           banglaReason: 'পেমেন্ট যাচাই হচ্ছে। একটু পরে আবার দেখুন।',
         );

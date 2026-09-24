@@ -6,12 +6,14 @@ import '../../../utils/styles.dart';
 import '../../../services/language_provider.dart';
 import '../../../utils/app_strings.dart';
 import '../../../models/user_model.dart';
-import '../../../providers/auth_provider.dart';
+import '../../../di/providers.dart';
 
 class ConstraintSolver {
   static bool canOpenDialog(WidgetRef ref) {
-    final user = ref.read(currentUserProvider);
-    return user?.role == 'admin';
+    final userData = ref.read(currentUserDataProvider).value;
+    if (userData == null) return false;
+    final user = UserModel.fromMap(userData);
+    return user.role == UserRole.admin;
   }
 
   static String? validateExpense(String title, String amountStr) {

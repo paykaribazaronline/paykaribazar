@@ -2,10 +2,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/auth_service.dart';
-import '../../core/firebase/firestore_service.dart';
-import '../../core/services/storage_service.dart';
-import '../../core/constants/paths.dart';
-import '../../services/role_simulator_provider.dart'; // Assuming this is a general service
+import '../../../core/firebase/firestore_service.dart';
+import '../../../core/services/storage_service.dart';
+import '../../../core/constants/paths.dart';
+import '../../../services/role_simulator_provider.dart'; // Assuming this is a general service
 
 // --- AUTH PROVIDERS ---
 

@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../../services/role_simulator_provider.dart';
 import '../../services/database_seeder.dart';
 import '../../utils/styles.dart';
 import '../../di/providers.dart';
+import '../../services/role_simulator_provider.dart';
 
 /// অ্যাডমিনকে যেকোনো ইউজারের মত অ্যাপ ব্যবহার করার সুযোগ দেয়
 class CustomerSimulatorScreen extends ConsumerStatefulWidget {
