@@ -21,6 +21,7 @@ class _MockFirebaseFirestore extends Mock implements FirebaseFirestore {}
 void main() {
   setUpAll(() {
     registerFallbackValue(FakeOrder());
+    registerFallbackValue(PaymentMethod.cod);
   });
 
   group('OrderService Tests', () {

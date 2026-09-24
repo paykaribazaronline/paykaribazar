@@ -41,6 +41,10 @@ class CheckoutFlowHandler {
 }
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(PaymentMethod.cod);
+  });
+
   group('Checkout Flow Tests', () {
     late CheckoutFlowHandler checkoutHandler;
     late MockCartService cartService;
