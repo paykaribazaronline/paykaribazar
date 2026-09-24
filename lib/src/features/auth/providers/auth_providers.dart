@@ -6,6 +6,7 @@ import '../../../core/firebase/firestore_service.dart';
 import '../../../core/services/storage_service.dart';
 import '../../../core/constants/paths.dart';
 import '../../../services/role_simulator_provider.dart'; // Assuming this is a general service
+import '../../../di/service_locator.dart';
 
 // --- AUTH PROVIDERS ---
 
@@ -15,17 +16,14 @@ final firebaseAuthProvider = Provider((ref) => FirebaseAuth.instance);
 // Firebase Firestore instance provider (if not already in a core provider file)
 final firebaseFirestoreInstanceProvider = Provider((ref) => FirebaseFirestore.instance);
 
-// Storage Service Provider (assuming it's a core service)
-final storageServiceProvider = Provider((ref) => StorageService());
+// Storage Service Provider
+final storageServiceProvider = Provider<StorageService>((ref) => getIt<StorageService>());
 
-// Firestore Service Provider (assuming it's a core service)
-final firestoreServiceProvider = Provider((ref) => FirestoreService(ref.watch(firebaseFirestoreInstanceProvider)));
+// Firestore Service Provider
+final firestoreServiceProvider = Provider<FirestoreService>((ref) => getIt<FirestoreService>());
 
-// AuthService instantiation without GetIt
-final authServiceProvider = Provider((ref) => AuthService(
-      storage: ref.watch(storageServiceProvider),
-      firestore: ref.watch(firestoreServiceProvider),
-    ));
+// AuthService Provider
+final authServiceProvider = Provider<AuthService>((ref) => getIt<AuthService>());
 
 final authProvider = authServiceProvider; // Alias for convenience
 

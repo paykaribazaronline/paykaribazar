@@ -124,7 +124,7 @@ void main() {
         total: 110.0,
         address: 'Addr',
         paymentMethod: 'COD',
-        status: OrderStatus.confirmed,
+        status: app_models.OrderStatus.confirmed,
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
@@ -173,7 +173,7 @@ void main() {
 
       final result = await orderService.getOrderById('order123');
       expect(result?.id, 'order123');
-      expect(result?.status, OrderStatus.pending);
+      expect(result?.status, app_models.OrderStatus.pending);
     });
 
     test('Update order status', () async {

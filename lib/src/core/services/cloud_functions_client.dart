@@ -176,7 +176,8 @@ class CloudFunctionsClient {
     String? apiBaseUrl,
     http.Client? httpClient,
     FirebaseAuth? auth,
-  })  : _functions = functions ?? FirebaseFunctions.instance,
+  })  : _functions = functions ??
+            FirebaseFunctions.instanceFor(region: _kFunctionsRegion),
         _apiBaseUrl = (apiBaseUrl ?? defaultApiBaseUrl).trim(),
         _http = httpClient ?? http.Client(),
         _auth = auth ?? FirebaseAuth.instance;
@@ -197,7 +198,7 @@ class CloudFunctionsClient {
   /// Returns a callable bound to the backend region.
   HttpsCallable _c(String name) => _functions.httpsCallable(
         name,
-        options: HttpsCallableOptions(region: _kFunctionsRegion),
+        options: const HttpsCallableOptions(timeout: Duration(seconds: 30)),
       );
 
   // ------------------------------- pricing ---------------------------------

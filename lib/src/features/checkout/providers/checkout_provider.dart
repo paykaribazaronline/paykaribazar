@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/services/cloud_functions_client.dart';
 import '../../payments/models/payment_method.dart';
+import '../../payments/models/payment_result.dart';
 import '../../payments/services/payment_redirect_handler.dart';
 import '../models/pricing_snapshot.dart';
 import '../services/checkout_service.dart';

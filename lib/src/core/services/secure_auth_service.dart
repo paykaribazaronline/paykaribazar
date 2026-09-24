@@ -67,7 +67,9 @@ class SecureAuthService {
       // (e.g. the system showing the biometric prompt).
       return await _localAuth.authenticate(
         localizedReason: localizedReason,
-        stickyAuth: true,
+        options: const AuthenticationOptions(
+          stickyAuth: true,
+        ),
       );
     } catch (e) {
       debugPrint('❌ Biometric authentication failed: $e');
@@ -82,7 +84,9 @@ class SecureAuthService {
     try {
       return await _localAuth.authenticate(
         localizedReason: localizedReason,
-        stickyAuth: true,
+        options: const AuthenticationOptions(
+          stickyAuth: true,
+        ),
       );
     } catch (e) {
       debugPrint('❌ Sensitive operation authentication failed: $e');

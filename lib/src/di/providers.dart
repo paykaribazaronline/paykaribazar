@@ -35,6 +35,7 @@ import '../features/ai/services/forecasting_service.dart';
 import '../features/commerce/services/loyalty_service.dart';
 import '../features/logistics/services/delivery_service.dart';
 import '../services/fleet_service.dart';
+import '../features/auth/providers/auth_providers.dart';
 
 // --- MODELS & TYPES ---
 export '../core/constants/paths.dart';

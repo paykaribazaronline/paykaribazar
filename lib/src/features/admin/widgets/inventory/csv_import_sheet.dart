@@ -40,7 +40,7 @@ class _CsvImportSheetState extends ConsumerState<CsvImportSheet> {
         final input = file.openRead();
         final fields = await input
             .transform(utf8.decoder)
-            .transform(Csv().decoder)
+            .transform(const CsvToListConverter())
             .toList();
 
 
