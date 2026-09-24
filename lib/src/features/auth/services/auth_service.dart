@@ -265,7 +265,7 @@ class AuthService {
   }
 
   Future<User?> signInWithGoogle() async {
-    // TODO(prod): google_sign_in v7 removed the unnamed `GoogleSignIn()`
+    // TODO(audit): google_sign_in v7 removed the unnamed `GoogleSignIn()`
     // constructor, the `signIn()` instance method, and the
     // `GoogleSignInAuthentication.accessToken` getter. Migrating to the new
     // API (`GoogleSignIn.instance`, `authenticate()`, and the new

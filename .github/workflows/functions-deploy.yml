@@ -189,7 +189,10 @@ jobs:
           HAS_WIF: ${{ secrets.GCP_FUNCTIONS_WIF_PROVIDER != '' }}
 
       - name: Install Firebase CLI
-        run: npm install -g firebase-tools@latest
+        # Pin to major version `13` to match `auto-build-and-deploy.yml`'s
+        # `FIREBASE_TOOLS_VERSION` env — `@latest` re-resolves on every run
+        # and has previously caused non-deterministic deploys.
+        run: npm install -g firebase-tools@13
 
       - name: Verify Firestore indexes are deployed
         if: github.event.inputs.environment == 'production'

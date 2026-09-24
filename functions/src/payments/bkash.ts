@@ -29,7 +29,7 @@ import { recordAudit } from "../audit/auditLog";
 import { httpClient, sanitise, TokenCache, type CreatePaymentResult } from "./_http";
 
 const SANDBOX = (process.env.BKASH_SANDBOX ?? "true") === "true";
-const BASE_URL = SANDBOX
+export const BKASH_BASE_URL = SANDBOX
   ? "https://tokenized.sandbox.bka.sh/v1.2.0-beta"
   : "https://tokenized.pay.bka.sh/v1.2.0-beta";
 const TOKEN_URL = SANDBOX
@@ -74,7 +74,11 @@ export async function grantToken(): Promise<string> {
     );
     const token = res.data?.id_token;
     if (!token) {
-      errInternal(`bKash token grant failed: ${JSON.stringify(res.data)}`);
+      // bKash token-grant failures include `statusMessage` + `statusCode`
+      // (safe) but historically also echoed fragments of the request — sanitise
+      // so an `id_token` or `app_secret` never lands in the HttpsError
+      // `details` field (which the Flutter client surfaces verbatim).
+      errInternal(`bKash token grant failed: ${JSON.stringify(sanitise(res.data))}`);
     }
     return { token, ttlMs: 50 * 60 * 1000 };
   });
@@ -87,7 +91,7 @@ export async function createPayment(params: {
   userId: string;
 }): Promise<{ bkashURL: string; paymentID: string }> {
   const token = await grantToken();
-  const client = httpClient({ baseURL: BASE_URL, headers: { Authorization: token } });
+  const client = httpClient({ baseURL: BKASH_BASE_URL, headers: { Authorization: token } });
 
   const body = {
     mode: "0011",
@@ -115,7 +119,7 @@ export async function createPayment(params: {
 /** Execute after the user returns from the gateway. */
 export async function executePayment(paymentID: string): Promise<Record<string, unknown>> {
   const token = await grantToken();
-  const client = httpClient({ baseURL: BASE_URL, headers: { Authorization: token } });
+  const client = httpClient({ baseURL: BKASH_BASE_URL, headers: { Authorization: token } });
   const res = await client.post("/execute", { paymentID });
   return res.data as Record<string, unknown>;
 }
@@ -123,7 +127,7 @@ export async function executePayment(paymentID: string): Promise<Record<string, 
 /** Search a payment (used by webhook + verifyPayment). */
 export async function searchPayment(paymentID: string): Promise<Record<string, unknown>> {
   const token = await grantToken();
-  const client = httpClient({ baseURL: BASE_URL, headers: { Authorization: token } });
+  const client = httpClient({ baseURL: BKASH_BASE_URL, headers: { Authorization: token } });
   const res = await client.post("/search", { paymentID });
   return res.data as Record<string, unknown>;
 }

@@ -45,7 +45,11 @@ export async function markPaymentPaid(args: {
   const paymentRef = db.doc(`payments/${args.paymentId}`);
   const orderRef = db.doc(`orders/${args.orderId}`);
 
-  // Idempotency: if the payment doc is already verified/paid, bail.
+  // Fast-path idempotency pre-check (cheap read outside the transaction so the
+  // common "gateway re-delivered the same webhook" case doesn't pay the cost
+  // of `commitReservation` + a transaction). This is BEST-EFFORT only — the
+  // authoritative check is inside the transaction below (a concurrent pair of
+  // webhook calls could both pass this read before either writes).
   const existing = await paymentRef.get();
   if (existing.exists) {
     const data = existing.data() as Record<string, unknown>;
@@ -60,14 +64,38 @@ export async function markPaymentPaid(args: {
     throw new https.HttpsError("failed-precondition", "Order has no reservation.");
   }
 
+  // TODO(audit): `commitReservation` runs its own Firestore transaction
+  // OUTSIDE the order/payment transaction below. If this call succeeds (stock
+  // decremented, reservation marked "committed") but the order/payment
+  // transaction then fails, stock is decremented but the order remains
+  // `pending_payment` — leaving a half-committed state that requires manual
+  // recovery. Fixing this requires merging both transactions into one (or
+  // sequencing them so commitReservation is reversible on downstream failure).
+  // Left as-is because the recovery semantics need a design decision.
   const commit = await commitReservation(reservationId);
   if (commit.status === "missing") {
     throw new https.HttpsError("failed-precondition", "Reservation missing.");
   }
 
-  await db.runTransaction(async (tx) => {
+  // The transaction does the AUTHORITATIVE idempotency check by re-reading
+  // `paymentRef` inside `tx.get`. Two concurrent webhook calls would both pass
+  // the pre-check above, but Firestore's pessimistic transaction locking
+  // serialises the second one's `tx.get(paymentRef)` until the first commits,
+  // so the second sees `status: "verified"` and bails with `committed: false`.
+  const txResult = await db.runTransaction(async (tx) => {
+    const pSnap = await tx.get(paymentRef);
+    if (pSnap.exists) {
+      const pData = pSnap.data() as Record<string, unknown>;
+      if (pData.status === "verified" || pData.status === "paid") {
+        return { committed: false, reservationStatus: "already_committed" as const };
+      }
+    }
     const oSnap = await tx.get(orderRef);
-    if (!oSnap.exists) return;
+    if (!oSnap.exists) {
+      // Order vanished between the pre-check and now — abort without writing
+      // (avoids leaving a paid payment doc pointing at a non-existent order).
+      return { committed: false, reservationStatus: commit.status as CommitResult["status"] };
+    }
     tx.set(
       orderRef,
       {
@@ -95,15 +123,18 @@ export async function markPaymentPaid(args: {
       },
       { merge: true },
     );
+    return { committed: true, reservationStatus: commit.status as CommitResult["status"] };
   });
 
-  await recordAudit({
-    actorUid: null,
-    action: "payment.webhook_verified",
-    targetType: "payment",
-    targetId: args.paymentId,
-    after: { provider: args.provider, orderId: args.orderId, reservationStatus: commit.status },
-  });
+  if (txResult.committed) {
+    await recordAudit({
+      actorUid: null,
+      action: "payment.webhook_verified",
+      targetType: "payment",
+      targetId: args.paymentId,
+      after: { provider: args.provider, orderId: args.orderId, reservationStatus: txResult.reservationStatus },
+    });
+  }
 
-  return { committed: true, reservationStatus: commit.status };
+  return txResult;
 }

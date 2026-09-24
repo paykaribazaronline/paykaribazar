@@ -426,6 +426,46 @@ class _CheckoutBottomSheetState extends ConsumerState<CheckoutBottomSheet> {
     }
 
     try {
+      // TODO(audit): this entire `_placeOrder` body is the LEGACY client-side
+      // flow. It bypasses the secure backend (OrderService.placeOrder /
+      // CheckoutService.checkout) by:
+      //   1. Computing totals + discounts client-side (lines 405-409).
+      //   2. Decrementing product stock directly via a Firestore transaction
+      //      (lines 459-474) — the new `firestore.rules` block this with
+      //      `allow update: if false` on `products/{id}.stock`, so every
+      //      real order will throw PERMISSION_DENIED here in production.
+      //   3. Writing the order doc directly to Firestore
+      //      (`firestoreServiceProvider.placeOrder`, line 507) — also
+      //      blocked by the new rules (`allow create: if false` on
+      //      `orders/{orderId}`).
+      //   4. Signing an "API request" client-side via APISecurityService
+      //      (lines 477-505) — purely cosmetic, the signature is never
+      //      verified server-side.
+      //
+      // The replacement flow is:
+      //   ref.read(checkoutProvider.notifier).startCheckout(
+      //     CheckoutRequest(
+      //       items: state.items
+      //           .map((i) => CartItemRequest(
+      //                 productId: i.id, quantity: i.quantity))
+      //           .toList(growable: false),
+      //       addressId: addr.id,
+      //       paymentMethod: <selected from PaymentMethodSelector>,
+      //       couponCode: state.appliedCouponMap?['code'],
+      //       note: null,
+      //     ),
+      //   );
+      // and then observe `checkoutProvider` state transitions
+      // (CheckoutRedirecting -> CheckoutVerifying -> CheckoutSuccess).
+      // Migration is deferred because it requires:
+      //   - adding the PaymentMethodSelector UI to this sheet,
+      //   - threading the server-computed PricingSnapshot into the
+      //     summary display,
+      //   - and handling the gateway-redirect + verify UI states.
+      // Until the migration lands, this sheet will fail at runtime against
+      // the production backend — use the new checkout flow via
+      // `CheckoutBottomSheetV2` (planned) instead.
+
       // ⭐ SECURITY: Step 1 - Biometric Verification for high-value operations
       final secureAuth = SecurityInitializer.secureAuth;
       final isAuthenticated = await secureAuth.authenticateForSensitiveOperation(

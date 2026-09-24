@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/services/cloud_functions_client.dart';
+import '../../commerce/services/order_service.dart' show CartItemRequest;
 import '../models/pricing_snapshot.dart';
 import '../../payments/models/payment_init.dart';
 import '../../payments/models/payment_method.dart';
@@ -42,27 +43,6 @@ class CheckoutRequest {
     this.sslCancelUrl,
     this.bankSlipUrl,
   });
-}
-
-/// Cart line item in the wire format expected by `calcOrder`. Keep this a
-/// plain DTO (no Flutter / Firestore deps) so it can be unit-tested in
-/// isolation.
-class CartItemRequest {
-  final String productId;
-  final int quantity;
-  final String? variantId;
-
-  const CartItemRequest({
-    required this.productId,
-    required this.quantity,
-    this.variantId,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'productId': productId,
-        'quantity': quantity,
-        if (variantId != null) 'variantId': variantId,
-      };
 }
 
 /// The end-of-checkout result handed back to the UI. For gateway flows

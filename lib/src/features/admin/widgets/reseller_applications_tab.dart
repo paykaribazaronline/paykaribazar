@@ -175,7 +175,7 @@ class _ActiveResellersView extends ConsumerWidget {
                 ),
                 child: ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: Colors.teal.withOpacity(0.1),
+                    backgroundColor: Colors.teal.withValues(alpha: 0.1),
                     child: const Icon(Icons.store, color: Colors.teal, size: 20)
                   ),
                   title: Text(u['name'] ?? 'N/A',

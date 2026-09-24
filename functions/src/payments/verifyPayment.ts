@@ -17,6 +17,7 @@ import { recordAudit } from "../audit/auditLog";
 import { markPaymentPaid } from "./webhooks/_shared";
 import { searchPayment as bkashSearch } from "./bkash";
 import { verify as nagadVerify } from "./nagad";
+import { sanitise } from "./_http";
 // NOTE: SSLCommerz's `validate()` is intentionally NOT imported here. The
 // `verifyPayment` callable relies on the SSLCommerz webhook (sslcommerzWebhook)
 // to commit payments — there's no client-pollable "search by sessionkey"
@@ -74,7 +75,7 @@ export const verifyPayment = onCall(
 
     if (provider === "bkash") {
       const r = await bkashSearch(paymentRefId).catch((e) => {
-        console.error("[verifyPayment] bkash search failed:", e);
+        console.error("[verifyPayment] bkash search failed:", sanitise(e));
         return null;
       });
       if (r && r.transactionStatus === "Completed") verifiedPayload = r;
@@ -82,7 +83,7 @@ export const verifyPayment = onCall(
       const invoiceId = String(paymentData.invoiceId ?? "");
       const r = await nagadVerify(paymentRefId, invoiceId, amountPoisha).catch(
         (e) => {
-          console.error("[verifyPayment] nagad verify failed:", e);
+          console.error("[verifyPayment] nagad verify failed:", sanitise(e));
           return null;
         },
       );

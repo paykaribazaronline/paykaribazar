@@ -78,6 +78,20 @@ void main() {
     // Initialize all services
     await ServiceInitializer.initialize();
 
+    // TODO(audit): P0 — these `DatabaseSeeder.seedAll()` / `seedProducts()` /
+    // `seedPromos()` calls mutate Firestore on EVERY customer-app launch
+    // (gated only by an `isEmpty` check that races when two cold starts hit
+    // an empty database simultaneously). The new `firestore.rules` (Task ID
+    // 7-8) forbid client writes to `products`, `promos`, and `locations`
+    // from non-staff users, so in production each `seed*` call will throw
+    // PERMISSION_DENIED — caught here by the try/catch and silently logged,
+    // which masks the misconfiguration. The admin app already migrated to
+    // the `runSeed` callable (see main_admin.dart); the customer app must
+    // do the same and have ONLY the backend seed the database. Removing
+    // the block is a behavior change (a freshly-installed customer app on
+    // an empty database would render no products until an admin seeds),
+    // so it's deferred.
+
     // Auto seed/sync locations if database is empty or has no districts
     try {
       final snap = await FirebaseFirestore.instance.collection(HubPaths.locations)

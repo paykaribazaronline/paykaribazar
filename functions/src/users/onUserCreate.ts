@@ -75,6 +75,14 @@ export const onUserCreate = onDocumentCreated(
   },
 );
 
+// TODO(audit): `onUserCreateCallable` is exported from this module and consumed
+// by `apiRouter.ts` (the Express/Render/Vercel alternative hosting surface),
+// but it is NOT re-exported from `functions/src/index.ts` — so it does not
+// deploy as a Cloud Function on GCP. The GCP entry-point for new-user role
+// assignment is `onUserCreate` (the Firestore trigger above). If you want the
+// callable surface on GCP too, add `export { onUserCreateCallable } from
+// "./users/onUserCreate";` to `index.ts` and list it in `functions-deploy.yml`'s
+// `firebase deploy --only functions:` step.
 export const onUserCreateCallable = onCall(
   { region: "asia-southeast1" },
   async (req) => {

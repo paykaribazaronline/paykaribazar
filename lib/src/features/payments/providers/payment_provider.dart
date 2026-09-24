@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -51,10 +53,26 @@ class PaymentCancelled extends PaymentState {
 }
 
 class PaymentNotifier extends StateNotifier<PaymentState> {
-  PaymentNotifier(this._handler) : super(const PaymentIdle());
+  PaymentNotifier(this._handler) : super(const PaymentIdle()) {
+    // Wire the redirect handler's deep-link callback to our own [onRedirect]
+    // method. Without this, parsed redirect params from `app_links` would
+    // never reach the state machine (the `_callback` field in
+    // PaymentRedirectHandler would stay null and the link would be dropped).
+    _handler.onRedirect = onRedirect;
+  }
 
   final PaymentRedirectHandler _handler;
   PaymentInit? _active;
+
+  @override
+  void dispose() {
+    // Detach the callback and cancel the deep-link subscription so a
+    // redirect that arrives after the notifier is gone doesn't call
+    // `setState`-equivalent on a disposed StateNotifier.
+    _handler.onRedirect = null;
+    unawaited(_handler.dispose());
+    super.dispose();
+  }
 
   Future<void> initiate({
     required PaymentInit init,

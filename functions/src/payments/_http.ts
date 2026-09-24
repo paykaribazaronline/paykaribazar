@@ -30,13 +30,23 @@ export function sanitise(obj: unknown): unknown {
     "app_secret",
     "appSecret",
     "password",
+    "store_passwd",
+    "store_password",
     "token",
     "accessToken",
     "refreshToken",
     "id_token",
     "idToken",
+    "apiKey",
+    "api_key",
     "privateKey",
+    "private_key",
     "signature",
+    "verify_key",
+    "verify_sign",
+    "sensitiveData",
+    // bKash / Nagad encrypted blobs that may carry merchant credentials
+    "sensitive",
   ];
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {

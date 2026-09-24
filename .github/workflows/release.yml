@@ -48,7 +48,9 @@ jobs:
           fetch-depth: 0
 
       - name: TruffleHog
-        uses: trufflesecurity/trufflehog@main
+        # Pinned to the same version used by auto-build-and-deploy.yml —
+        # running security tools from `@main` is a supply-chain risk.
+        uses: trufflesecurity/trufflehog@v3.88.34
         with:
           path: ./
           base: ${{ github.event.repository.default_branch }}
@@ -144,7 +146,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: ☕ Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '21'  # firebase-tools requires JDK 21+
           distribution: 'temurin'
@@ -247,7 +249,7 @@ jobs:
           echo "EOF" >> $GITHUB_ENV
 
       - name: 🎉 Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             release_apks/paykari_bazar_customer_*.apk
@@ -338,6 +340,12 @@ jobs:
       - name: Deploy Firestore Rules
         run: firebase deploy --only firestore:rules --project=${{ secrets.FIREBASE_PROJECT_ID }} --token=${{ secrets.FIREBASE_TOKEN }}
 
+      # TODO(audit): `w9jds/firebase-action@master` is a supply-chain risk —
+      # it runs whatever code is on `master` at fetch time. Replace with a
+      # pinned tag (e.g. `@v2.4.0`) once the latest stable tag is verified, or
+      # replace this step with a direct `firebase deploy --only hosting` call
+      # (the only reason this third-party action is used is its token-refresh
+      # helper, which `--token=${{ secrets.FIREBASE_TOKEN }}` already covers).
       - name: Deploy Firebase Hosting
         uses: w9jds/firebase-action@master
         with:
@@ -365,7 +373,7 @@ jobs:
           service_account: ${{ secrets.GCP_PLAY_SERVICE_ACCOUNT }}
 
       - name: Download release builds
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: release-builds
 
@@ -399,18 +407,26 @@ jobs:
             --track internal \
             --json_key metadata/service_account.json
 
+  # TODO(audit): `create-github-release` is REDUNDANT — the `build-release`
+  # job above already creates the GitHub Release (see its "🎉 Create GitHub
+  # Release" step at softprops/action-gh-release). This job tries to download
+  # a `release-builds` workflow artifact that is NEVER uploaded (build-release
+  # attaches the APKs directly to the Release via `files:`). On a tag push,
+  # this job would either fail at the download step or create an empty
+  # duplicate release. Disabled pending removal; the build-release step is
+  # the canonical release path.
   create-github-release:
     name: Create GitHub Release
     runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 10
     needs: [build-release, deploy-shorebird, deploy-firebase]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: false && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - uses: actions/checkout@v5
 
       - name: Download artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: release-builds
 
@@ -443,7 +459,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             build/app/outputs/flutter-apk/customer-release.apk

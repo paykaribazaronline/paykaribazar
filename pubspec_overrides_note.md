@@ -48,25 +48,30 @@ dependencies:
 `uni_links` has not seen a release since 2022 and fails on newer Android
 versions. `app_links` is the community-standard replacement, supports
 universal links on iOS, and is what `flutter.dev` recommends. The handler
-at `lib/src/features/payments/services/payment_redirect_handler.dart` has
-a stubbed `_appLinksStream()` method that returns `Stream<Uri>.empty()` —
-the maintainer should create a thin shim `lib/src/features/payments/services/app_links_stream.dart`
-that does:
+at `lib/src/features/payments/services/payment_redirect_handler.dart`
+originally had a stubbed `_appLinksStream()` method that returned
+`Stream<Uri>.empty()` — the AUDIT-1 pass inlined the production
+implementation directly (no separate shim file is needed because
+`app_links ^6.1.1` is already in `pubspec.yaml`):
 
 ```dart
 import 'package:app_links/app_links.dart';
 import 'dart:async';
 
-Stream<Uri> appLinksStream() {
-  final _appLinks = AppLinks();
-  return _appLinks.uriLinkStream;
+Stream<Uri> _appLinksStream() {
+  try {
+    return AppLinks().uriLinkStream;
+  } catch (_) {
+    return const Stream<Uri>.empty();
+  }
 }
 ```
 
-…and then patch `payment_redirect_handler.dart` to override
-`_appLinksStream()` to return `appLinksStream()`. Until that shim is
-added, the handler falls back to a no-op stream (deep-link events are
-ignored), so the app still compiles and works for COD + bank-transfer.
+The `CheckoutNotifier` and `PaymentNotifier` constructors wire the
+handler's `onRedirect` callback to their respective state machines so
+parsed deep-link params actually reach the state transitions (this wiring
+was missing before the audit — even with the stream subscribed, the
+parsed callback was dropped on the floor).
 
 ## Why `flutter_inappwebview`
 

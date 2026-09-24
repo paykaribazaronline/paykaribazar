@@ -87,6 +87,15 @@ void main() {
       dsn = (dotenv.env['SENTRY_DSN'] ?? '').trim();
     } catch (_) {}
     if (dsn.isEmpty) {
+      // TODO(audit): this hardcoded Sentry DSN fallback is inconsistent with
+      // `main_customer.dart` (which uses an empty DSN when SENTRY_DSN is
+      // missing and lets SentryFlutter.init no-op silently). Either:
+      //   (a) remove this fallback to match `main_customer.dart`, or
+      //   (b) move the DSN into Remote Config / Firebase Remote Config so it
+      //       is not shipped in the binary.
+      // Left in place for now because removing it would silently disable
+      // crash reporting on the admin app in release builds where `.env`
+      // isn't bundled.
       dsn = 'https://08442f2fde59f1f763b3c271df8c11bc@o4510812244869120.ingest.us.sentry.io/4510812374892544';
     }
 

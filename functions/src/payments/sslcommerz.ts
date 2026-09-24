@@ -24,6 +24,11 @@ import { httpClient, sanitise, type CreatePaymentResult } from "./_http";
 
 const SANDBOX = (process.env.SSLCOMMERZ_SANDBOX ?? "true") === "true";
 const BASE_URL = SANDBOX ? "https://sandbox.sslcommerz.com" : "https://securepay.sslcommerz.com";
+// TODO(audit): the sandbox vs. production paths are identical — both
+// `/gwprocess/v4/api.php` and `/validator/api/validationserver.php` are used
+// on both environments (the sandbox/prod distinction is in the host only).
+// Collapse to two unconditioned constants once a maintainer confirms; left
+// duplicated here to avoid a behaviour change without verification.
 const INITIATE_PATH = SANDBOX
   ? "/gwprocess/v4/api.php"
   : "/gwprocess/v4/api.php";
