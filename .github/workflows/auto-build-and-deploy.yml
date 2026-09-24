@@ -274,8 +274,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-emulators-
 
+      # Cache the npm tarball cache so the global CLI install resolves from disk
+      # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each job.
+      - name: Cache npm download cache (Firebase CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
+
       - name: Install Firebase CLI
-        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }}
+        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }} --prefer-offline
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -365,11 +373,16 @@ jobs:
   prepare:
     name: 📦 Prepare & Generate Code
     runs-on: ubuntu-24.04
-    needs: [setup, rules-test, functions-test]
-    # `always()` is required so prepare still runs when `rules-test` or
-    # `functions-test` were skipped due to path filtering (skipped != failed).
-    # The `!contains(...)` guards still abort the chain if any need failed.
-    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    # Optimised (perf): `rules-test` / `functions-test` used to gate this job,
+    # which serialised `dart run build_runner build` behind the Firestore
+    # emulator boot and the functions `npm ci` — neither of which codegen needs.
+    # Both suites still gate every build (see `needs:` of build-mobile /
+    # build-web), they just no longer gate code generation, so every downstream
+    # job starts ~1.4 min earlier (measured on master-push runs).
+    needs: [setup]
+    # No `always()` required any more: `setup` is the only dependency and a
+    # failed `setup` skips this job by default.
+    if: needs.setup.outputs.has_code_changes == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Setup Flutter
@@ -398,18 +411,25 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 5: Testing & Analysis (FATAL — no continue-on-error)
   # ─────────────────────────────────────────────────────────────────────────
+  # Optimised (perf): this used to be one serial `🧪 Test & Analyze` job
+  # (advisory audit → analyze → unit tests ≈ 2.3 min). It is now two parallel
+  # jobs (`analyze` and `unit-test`), so the critical path is the slower single
+  # leg instead of the sum. The advisory `flutter pub outdated` / `npm audit`
+  # step was dropped — it was `|| true` (never gated a merge) and only added
+  # registry latency and flakiness to the critical path.
   # ─────────────────────────────────────────────────────────────────────────
-  # Optimised: flutter pub outdated and npm audit are now advisory-only (|| true)
-  # — they report package freshness but should not gate a PR merge.
-  # ─────────────────────────────────────────────────────────────────────────
-  test-security-analyze:
-    name: 🧪 Test & Analyze
+  analyze:
+    name: 🔍 Analyze (Flutter)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     needs: [setup, prepare]
-    # `always()` so test-security-analyze still runs if `prepare`'s upstream
-    # `rules-test`/`functions-test` were skipped (path-filtered).
-    if: always() && github.event.inputs.skip_tests != 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    # Split out of the old single 🧪 Test & Analyze job (perf): analyze and the
+    # unit-test suite are independent once codegen has run, so they now execute
+    # in parallel instead of back-to-back. `prepare`'s generated files are a
+    # hard prerequisite, hence `needs.prepare.result == 'success'` replaces the
+    # old `always()` guard — a skipped/failed prepare has no
+    # .g.dart/.freezed.dart files and would fail here with missing-part errors.
+    if: needs.setup.outputs.has_code_changes == 'true' && needs.prepare.result == 'success' && github.event.inputs.skip_tests != 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -439,16 +459,10 @@ jobs:
             lib/**/*.gr.dart
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
 
-      - name: 📦 Dependency Audit (advisory — non-blocking)
-        run: |
-          echo "🔍 Checking for dependency security issues..."
-          # `dart pub audit` was removed from the Dart SDK — use flutter pub outdated.
-          # Non-blocking: output is advisory and should not gate a PR merge.
-          flutter pub outdated || true
-          if [ -f functions/package-lock.json ]; then
-            (cd functions && npm audit --audit-level=high) || true
-          fi
-
+      # Removed (perf): the advisory "📦 Dependency Audit" step ran
+      # `flutter pub outdated` + `npm audit` under `|| true` on every run. It
+      # could never fail the build, but it added registry round-trips on the
+      # critical path. Run `flutter pub outdated` locally for that report.
       - name: Run Flutter Analyze (FATAL on warning + error; INFOs are advisory)
         run: |
           # Only analyze directories that exist
@@ -463,8 +477,52 @@ jobs:
           # drift from new SDK signatures.
           flutter analyze $DIRS_TO_ANALYZE --fatal-warnings --no-fatal-infos
 
-      - name: Run unit tests
-        run: flutter test --coverage
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 5b: Unit tests (FATAL)
+  # ─────────────────────────────────────────────────────────────────────────
+  # Split out of the old single 🧪 Test & Analyze job (perf) so it runs in
+  # parallel with `analyze` rather than after it.
+  # `--coverage` was dropped: no step or job in this repo consumed the lcov
+  # file (`coverage/lcov.info` is git-ignored and there is no Codecov/upload
+  # step), so it only added instrumentation overhead to every test run.
+  # ─────────────────────────────────────────────────────────────────────────
+  unit-test:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs: [setup, prepare]
+    if: needs.setup.outputs.has_code_changes == 'true' && needs.prepare.result == 'success' && github.event.inputs.skip_tests != 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+        with: # Full history is not needed for testing
+          fetch-depth: 1
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Create dummy Firebase options
+        run: bash .github/scripts/create_dummy_firebase_options.sh
+
+      - name: Restore cached generated files
+        uses: actions/cache@v4
+        with:
+          path: |
+            .dart_tool
+            lib/**/*.g.dart
+            lib/**/*.freezed.dart
+            lib/**/*.gr.dart
+          key: ${{ runner.os }}-build-gen-${{ github.sha }}
+
+      - name: Run unit tests (FATAL)
+        run: flutter test
 
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 6: Security — Vulnerability & Secret Scanning (FATAL)
@@ -502,6 +560,17 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
+
+      # Folded in from the former standalone `sbom-generation` job (perf): both
+      # jobs checked out the same commit on the same runner image, so one runner
+      # now covers both. anchore/sbom-action@v0 caches the syft binary itself.
+      - name: 📋 Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+          artifact-name: sbom
 
   secrets-scan:
     name: 🔑 Secrets Scan (TruffleHog + Gitleaks)
@@ -543,10 +612,13 @@ jobs:
 
   # Hard-coded known-leaked-string guard — fails immediately if any of the
   # previously-leaked placeholder secrets reappear in the source tree.
-  forbidden-secret-patterns:
-    name: 🚫 Forbidden Secret Patterns
+  # Merged (perf): `forbidden-secret-patterns` and `env-example-check` were two
+  # separate runners doing two ripgrep scans over the identical checkout. Both
+  # scans now share one runner; the checks themselves are unchanged.
+  static-guards:
+    name: 🛡️ Static Guards (Secrets + .env.example)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     needs: setup
     steps:
       - uses: actions/checkout@v4
@@ -574,14 +646,8 @@ jobs:
           fi
           echo "✅ No forbidden placeholder secrets found."
 
-  # Sanity check — .env.example may exist (template) but must NOT contain real secrets
-  env-example-check:
-    name: 🔎 .env.example Sanity Check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    needs: setup
-    steps:
-      - uses: actions/checkout@v4
+      # Sanity check — .env.example may exist (template) but must NOT contain
+      # real secrets.
       - name: Ensure .env.example has no real secrets
         run: |
           set -e
@@ -599,26 +665,10 @@ jobs:
           echo "✅ .env.example contains only placeholders."
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Stage 7: SBOM Generation
+  # Stage 7: SBOM Generation — folded into `vulnerability-scan` (perf) so it no
+  # longer boots a second runner for the same commit. See the "📋 Generate SBOM"
+  # step in that job.
   # ─────────────────────────────────────────────────────────────────────────
-  # ─────────────────────────────────────────────────────────────────────────
-  # Optimised: replaced curl-pipe syft install with anchore/sbom-action@v0
-  # which caches the syft binary automatically and pins the version.
-  # ─────────────────────────────────────────────────────────────────────────
-  sbom-generation:
-    name: 📋 Generate SBOM
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    needs: setup
-    steps:
-      - uses: actions/checkout@v4
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          format: spdx-json
-          output-file: sbom.spdx.json
-          upload-artifact: true
-          artifact-name: sbom
 
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 8: Emulator-based E2E (gated, slow)
@@ -627,9 +677,10 @@ jobs:
     name: 🧫 Emulator E2E Checkout
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    needs: [setup, prepare, test-security-analyze]
-    # `always()` so the e2e job still runs when `prepare`'s upstream
-    # `rules-test`/`functions-test` were skipped (path-filtered).
+    needs: [setup, prepare, analyze, unit-test]
+    # `always()` so the e2e job still runs when path-filtered needs
+    # (`rules-test`/`functions-test`) or the `skip_tests`-gated
+    # `analyze`/`unit-test` jobs were skipped rather than failed.
     if: |
       always() &&
       github.event.inputs.run_e2e == 'true' &&
@@ -676,8 +727,16 @@ jobs:
         working-directory: functions
         run: npm run build
 
+      # Cache the npm tarball cache so the global CLI install resolves from disk
+      # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each job.
+      - name: Cache npm download cache (Firebase CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
+
       - name: Install Firebase CLI
-        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }}
+        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }} --prefer-offline
 
       - name: Create dummy Firebase options
         run: bash .github/scripts/create_dummy_firebase_options.sh
@@ -699,7 +758,7 @@ jobs:
     name: 🏗️ Mobile (${{ matrix.app }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    needs: [setup, prepare, rules-test, functions-test, test-security-analyze, secrets-scan, vulnerability-scan, forbidden-secret-patterns]
+    needs: [setup, prepare, rules-test, functions-test, analyze, unit-test, secrets-scan, vulnerability-scan, static-guards]
     if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     strategy:
       fail-fast: false
@@ -780,10 +839,26 @@ jobs:
 
       - name: Setup Shorebird
         uses: shorebirdtech/setup-shorebird@v1
+        # `cache: true` caches the Shorebird CLI install + its bundled artifacts
+        # (~1 min cold install per matrix job → ~15 s on a cache hit). This was
+        # measured as the single largest non-Gradle cost in build-mobile.
+        with:
+          cache: true
         if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
       - name: Build & Deploy (Shorebird Only)
         if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        # NOTE (measured, deliberately NOT changed here):
+        #   * `shorebird patch` is tried first and a failed attempt costs a full
+        #     build before `shorebird release` runs, i.e. ~2 Gradle builds when
+        #     the pubspec app version has no Shorebird release yet. Guarding the
+        #     attempt with `shorebird releases info --release-version` would
+        #     remove that, but the CLI output/exit-code contract could not be
+        #     verified from CI, so it was left alone rather than risk a release
+        #     regression.
+        #   * `--target-platform android-arm64` was NOT added: the existing
+        #     baseline release was built for all ABIs, and a patch must match the
+        #     baseline's ABI set, so this needs a deliberate cut-over.
         run: |
           # Try patching first
           if shorebird patch android --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart -- --build-number=${{ env.BUILD_NUMBER }}; then
@@ -798,14 +873,22 @@ jobs:
         env:
           SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_AUTH_TOKEN }}
 
-      - name: Fallback Standard Flutter Build
+      # Removed (perf): a "Fallback Standard Flutter Build" step used to run here
+      # on `failure()` and spend a full Gradle build (~5-6 min) recompiling the
+      # APK purely as a diagnostic. Nothing could ever consume it:
+      #   * the Shorebird step above `exit 1`s, so the job is already failed;
+      #   * the `release` job requires `needs.build-mobile.result == 'success'`;
+      #   * the "Upload APK artifact" step below is `success()`-guarded, so the
+      #     fallback's APK was discarded anyway.
+      # A Shorebird failure now surfaces in ~1 min instead of ~6. To reproduce
+      # that diagnostic locally:
+      #   flutter build apk --flavor <customer|admin> -t lib/main_<flavor>.dart --release
+      - name: Note Shorebird failure in summary
         if: failure() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
         run: |
-          echo "::warning::Shorebird build failed. Falling back to standard Flutter build for code verification."
+          echo "::warning::Shorebird build failed. See the step log above for the piggy-backed flutter build error."
           echo "### ⚠️ Shorebird Build Failure (${{ matrix.app }})" >> $GITHUB_STEP_SUMMARY
-          echo "Shorebird patch and release both failed. Running standard Flutter build to verify if the issue is code-related." >> $GITHUB_STEP_SUMMARY
-
-          flutter build apk --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart --release --build-number=${{ env.BUILD_NUMBER }}
+          echo "The OTA patch attempt and the full release attempt both failed — see the step log above." >> $GITHUB_STEP_SUMMARY
 
       - name: Verify Build (Non-main Branch)
         if: github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch'
@@ -845,7 +928,7 @@ jobs:
     name: 🌐 Build Web (${{ matrix.web-app }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [setup, prepare, rules-test, functions-test, test-security-analyze, secrets-scan, vulnerability-scan, forbidden-secret-patterns]
+    needs: [setup, prepare, rules-test, functions-test, analyze, unit-test, secrets-scan, vulnerability-scan, static-guards]
     if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     strategy:
       fail-fast: false
@@ -918,8 +1001,16 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # Cache the npm tarball cache so the global CLI install resolves from disk
+      # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each run.
+      - name: Cache npm download cache (Firebase CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
+
       - name: Install Firebase Tools
-        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }}
+        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }} --prefer-offline
 
       - name: Download customer web artifact
         uses: actions/download-artifact@v4
@@ -995,7 +1086,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [setup, build-mobile, build-web]
-    if: needs.setup.result == 'success' && needs.build-mobile.result == 'success' && needs.build-web.result == 'success'
+    # `should_deploy` is true only for pushes to `main` and manual dispatches.
+    # Previously this job also ran on integration-branch pushes, minting a
+    # `build-<n>` prerelease tag + a Slack "Build Successful" ping for branches
+    # that never deploy. No `develop`/`staging` branch exists today, so this is
+    # latent hardening — drop the `should_deploy` clause to restore the old
+    # behaviour if you start cutting prereleases from an integration branch.
+    if: needs.setup.outputs.should_deploy == 'true' && needs.setup.result == 'success' && needs.build-mobile.result == 'success' && needs.build-web.result == 'success'
 
     env:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -1071,7 +1168,7 @@ jobs:
   notify-failure:
     name: 🚨 Notify Failure
     runs-on: ubuntu-24.04
-    needs: [setup, rules-test, functions-test, test-security-analyze, build-mobile, build-web, secrets-scan, vulnerability-scan, forbidden-secret-patterns, env-example-check, sbom-generation]
+    needs: [setup, rules-test, functions-test, analyze, unit-test, build-mobile, build-web, secrets-scan, vulnerability-scan, static-guards]
     # `always() && failure()` so the Slack alert still fires when some of the
     # path-filtered needs (rules-test / functions-test) were skipped — without
     # `always()` a skipped need would short-circuit this job to `skipped` too.

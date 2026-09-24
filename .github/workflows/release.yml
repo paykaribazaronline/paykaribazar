@@ -114,7 +114,7 @@ jobs:
         run: flutter analyze --fatal-warnings --no-fatal-infos
 
       - name: 🧪 Run tests (FATAL)
-        run: flutter test --coverage
+        run: flutter test
 
       # Reject production release if keystore.properties is missing or if
       # the repo would be forced to fall back to a debug-signed build.
