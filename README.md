@@ -1,7 +1,7 @@
 # Paykari Bazar
 
-[![CI](https://github.com/paykaribazar/paykaribazar/actions/workflows/auto-build-and-deploy.yml/badge.svg)](https://github.com/paykaribazar/paykaribazar/actions/workflows/auto-build-and-deploy.yml)
-[![Security](https://github.com/paykaribazar/paykaribazar/actions/workflows/security.yml/badge.svg)](https://github.com/paykaribazar/paykaribazar/actions/workflows/security.yml)
+[![CI](https://github.com/paykaribazaronline/paykaribazar/actions/workflows/auto-build-and-deploy.yml/badge.svg)](https://github.com/paykaribazaronline/paykaribazar/actions/workflows/auto-build-and-deploy.yml)
+[![Security](https://github.com/paykaribazaronline/paykaribazar/actions/workflows/security.yml/badge.svg)](https://github.com/paykaribazaronline/paykaribazar/actions/workflows/security.yml)
 [![License: Proprietary](https://img.shields.io/badge/license-proprietary-red.svg)](#license)
 
 **Paykari Bazar** is a Bangladesh-focused wholesale **B2B commerce platform** that lets retailers, resellers, and the Paykari operations team discover products, place orders, reserve inventory transactionally, pay via bKash / Nagad / SSLCommerz / Bank transfer, and dispatch — with every money / inventory / payment decision enforced **server-side** by Cloud Functions.

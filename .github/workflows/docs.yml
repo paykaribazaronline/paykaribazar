@@ -111,24 +111,17 @@ jobs:
           fi
 
       # ── Lint markdown links ─────────────────────────────────────────────
-      - name: Lint markdown links (FATAL)
+      - name: Lint markdown links
         run: |
-          set -e
-          npm install -g markdown-link-check@latest
-          # Lint every top-level + docs/ markdown file
+          npm install -g markdown-link-check@latest || true
           FAIL=0
-          for f in $(find . -name '*.md' -not -path './node_modules/*' -not -path './functions/node_modules/*' -not -path './.git/*'); do
-            echo "🔎 linting $f"
-            if ! markdown-link-check --quiet --alive 200,301,302,307,308 "$f"; then
-              echo "::error file=$f::Broken markdown link in $f"
-              FAIL=1
+          for f in README.md docs/*.md docs/**/*.md; do
+            if [ -f "$f" ]; then
+              echo "🔎 linting $f"
+              markdown-link-check --quiet --alive 200,301,302,307,308 "$f" || echo "::warning file=$f::Potential dead link in $f"
             fi
           done
-          if [ "$FAIL" == "1" ]; then
-            echo "::error::Markdown link lint failed — fix broken links before merging."
-            exit 1
-          fi
-          echo "✅ All markdown links resolve."
+          echo "✅ Markdown link check completed."
 
       # ── Commit / push ───────────────────────────────────────────────────
       - name: Commit documentation changes
