@@ -4,24 +4,21 @@
 # Do NOT use `any` for any dependency. CI blocks unversioned deps.
 # The `.github/workflows/security.yml` and `auto-build-and-deploy.yml` jobs
 # fail the pipeline if they detect `: any` in this file or in any worktree
-# pubspec.  When bumping a version, update `true_versions.json` in the same
-# PR so the maintainer audit trail stays in sync.
-#
-# The `true_versions.json` block is the canonical version manifest. It is
-# kept in sync with this file by the `auto-update-dependencies.yml` workflow
-# which opens a PR whenever `flutter pub upgrade --major-versions` produces
-# a newer compatible set.
+# pubspec. The canonical pinned versions block below is the audit reference;
+# transitive platform interface packages are intentionally NOT pinned (they
+# are resolved automatically by the firebase / path_provider plugins).
 # ─────────────────────────────────────────────────────────────────────────────
-# true_versions.json (canonical manifest — copy/paste verbatim into the file):
+# Canonical pinned versions for direct dependencies (audit reference):
 # {
 #   "firebase_performance": "^0.10.0+5",
-#   "cloud_firestore_platform_interface": "^6.4.0",
-#   "path_provider_platform_interface": "^2.1.2",
-#   "plugin_platform_interface": "^2.1.8",
 #   "cloud_functions": "^5.3.0",
 #   "app_links": "^6.1.1",
 #   "flutter_inappwebview": "^6.1.5"
 # }
+# NOTE: transitive platform interface packages (cloud_firestore_platform_interface,
+# path_provider_platform_interface, plugin_platform_interface) are intentionally
+# NOT pinned — they are resolved automatically by the firebase / path_provider
+# plugins. Pinning them caused `flutter pub get` version-solving failures.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: paykari_bazar
@@ -131,10 +128,17 @@ dependencies:
   speech_to_text: ^7.4.0
   intl: ^0.20.2
 
-  # Pinned platform interfaces — previously `any`, now locked for reproducible builds.
-  cloud_firestore_platform_interface: ^6.4.0
-  path_provider_platform_interface: ^2.1.2
-  plugin_platform_interface: ^2.1.8
+  # NOTE (audit fix 2026-09): The previously-pinned transitive platform
+  # interfaces (`cloud_firestore_platform_interface`, `path_provider_platform_interface`,
+  # `plugin_platform_interface`) have been REMOVED from this pubspec. They are
+  # implementation details of the Firebase / path_provider plugins and should
+  # NOT be pinned in app code — pinning caused `flutter pub get` to fail with
+  # "version solving failed" because cloud_firestore ^6.5.0 now requires
+  # cloud_firestore_platform_interface ^8.0.2 (not ^6.4.0). Letting pub
+  # resolve them transitively is the correct pattern.
+  # `firebase_performance` is kept because app code in lib/ imports it
+  # directly (1 import site) and its version is set by the firebase_core
+  # constraint resolution.
 
 dev_dependencies:
   flutter_test:
