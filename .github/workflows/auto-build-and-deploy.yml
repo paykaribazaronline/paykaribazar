@@ -9,6 +9,12 @@ on:
       - '**.md'
       - '**.txt'
       - 'dna/**'
+  pull_request:
+    branches: [main, develop, staging]
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - 'dna/**'
   schedule:
     # Keep the daily security scan schedule
     - cron: '0 2 * * *'
@@ -358,10 +364,10 @@ jobs:
           # removed in newer versions) — it now errors with
           # "Could not find a subcommand named 'audit' for 'dart pub'".
           # `flutter pub outdated` covers Dart-side package freshness.
-          # `npm audit --audit-level=moderate` covers the Cloud Functions deps.
+          # `npm audit --audit-level=high` covers the Cloud Functions deps.
           flutter pub outdated
           if [ -f functions/package-lock.json ]; then
-            (cd functions && npm audit --audit-level=moderate)
+            (cd functions && npm audit --audit-level=high)
           fi
 
       - name: Run Flutter Analyze (FATAL on info + warning)
