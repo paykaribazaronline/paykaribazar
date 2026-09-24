@@ -107,7 +107,7 @@ dependencies:
   crypto: ^3.0.7
   google_maps_flutter: ^2.17.1
   geolocator: ^13.0.0
-  fl_chart: ^1.2.0
+  fl_chart: ^0.70.2
   sensors_plus: ^7.0.0
   share_plus: ^10.1.4
   flutter_dotenv: ^6.0.1
