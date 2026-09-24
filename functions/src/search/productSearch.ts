@@ -71,7 +71,7 @@ export const searchProducts = onCall(
 
     // Scan products in batches — capped to keep memory predictable.
     const scanLimit = 500;
-    let snapshot = await db
+    const snapshot = await db
       .collection("products")
       .limit(scanLimit)
       .get();
