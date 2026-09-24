@@ -156,7 +156,7 @@ class CloudFunctionsClient {
   /// or configured at runtime via `CloudFunctionsClient.defaultApiBaseUrl = '...'`.
   static String defaultApiBaseUrl = const String.fromEnvironment(
     'BACKEND_API_URL',
-    defaultValue: '',
+    defaultValue: 'https://paykaribazar-backend.onrender.com',
   );
 
   CloudFunctionsClient({
