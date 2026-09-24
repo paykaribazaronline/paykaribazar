@@ -61,8 +61,10 @@ jobs:
 
       - name: Run Firestore/Storage rules tests (FATAL)
         run: |
+          # Use `flutter test` (not `dart test`) — see rules-emulator-test.yml
+          # comment for rationale (avoids analyzer/matcher version conflicts).
           firebase emulators:exec --only firestore,storage \
-            "dart test test/firestore_rules/"
+            "flutter test test/firestore_rules/"
         env:
           FIREBASE_CLI_PREVIEWS: storageEmulator
 
