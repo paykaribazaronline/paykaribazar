@@ -151,6 +151,11 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.4
   hive_generator: ^2.0.1
   build_runner: ^2.4.13
+  # Required by `dart test` (the rules-emulator-test.yml workflow invokes
+  # `dart test test/firestore_rules/` against the Firebase emulator, not
+  # `flutter test`). `flutter_test` re-exports `test`, but only inside a
+  # Flutter test runner — dart test needs the bare package:test dependency.
+  test: ^1.25.15
 
 flutter_launcher_icons:
   android: true
