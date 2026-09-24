@@ -2,41 +2,101 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // Profile pictures
+    // ==================== HELPERS ====================
+    function isAuth() { return request.auth != null; }
+    function isOwner(userId) { return isAuth() && request.auth.uid == userId; }
+
+    function isAdmin() {
+      return isAuth() &&
+        (request.auth.token.admin == true ||
+         firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin');
+    }
+
+    function isStaff() {
+      return isAuth() &&
+        (request.auth.token.role in ['admin', 'staff'] ||
+         firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['admin', 'staff']);
+    }
+
+    function isReseller() {
+      return isAuth() &&
+        (request.auth.token.role == 'reseller' ||
+         firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'reseller');
+    }
+
+    // ==================== PROFILE PHOTOS ====================
+    // Publicly readable (used as avatar URL in product reviews, orders, etc.).
+    // Only the owner may upload; 5MB cap; images only.
     match /profile_photos/{userId}/{allPaths=**} {
       allow read: if true;
-      allow write: if request.auth != null &&
-        request.auth.uid == userId &&
-        request.resource.size < 5 * 1024 * 1024 && // 5MB max
+      allow write: if isOwner(userId) &&
+        request.resource.size < 5 * 1024 * 1024 &&
         request.resource.contentType.matches('image/.*');
     }
 
-    // Product images
+    // ==================== PRODUCT IMAGES ====================
+    // Publicly readable (catalog). Admin or reseller may upload; 10MB cap;
+    // images only.
     match /products/{productId}/{allPaths=**} {
       allow read: if true;
-      allow write: if request.auth != null &&
-        (firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-         firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'reseller') &&
-        request.resource.size < 10 * 1024 * 1024 && // 10MB max
+      allow write: if (isAdmin() || isReseller()) &&
+        request.resource.size < 10 * 1024 * 1024 &&
         request.resource.contentType.matches('image/.*');
     }
 
-    // Prescriptions (private)
+    // ==================== PRESCRIPTIONS (private) ====================
+    // Healthcare domain — strict content-type allowlist (jpeg/png/webp).
     match /prescriptions/{userId}/{allPaths=**} {
-      allow read: if request.auth != null &&
-        (request.auth.uid == userId || firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin');
-      allow write: if request.auth != null &&
-        request.auth.uid == userId &&
-        request.resource.size < 5 * 1024 * 1024;
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isOwner(userId) &&
+        request.resource.size < 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/(jpeg|png|webp)');
     }
 
-    // Backups (admin only)
+    // ==================== PAYMENT SLIPS (bank transfer) ====================
+    // Bank transfer slip uploads — a NEW bucket for the bank-transfer
+    // payment path. The owner uploads; staff review during manual
+    // verification. Tightened to jpeg/png/webp, 8MB cap.
+    match /paymentslips/{userId}/{paymentId} {
+      allow read: if isOwner(userId) || isStaff();
+      allow write: if isOwner(userId) &&
+        request.resource.size < 8 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    // ==================== CHAT ATTACHMENTS ====================
+    // Read/write restricted to chat participants (looked up via the
+    // `private_chats/{chatId}.participantIds` Firestore doc). 10MB cap;
+    // images or PDFs only.
+    match /chat_attachments/{chatId}/{allPaths=**} {
+      allow read: if isAuth() &&
+        request.auth.uid in
+          firestore.get(/databases/(default)/documents/private_chats/$(chatId)).data.participantIds;
+      allow write: if isAuth() &&
+        request.auth.uid in
+          firestore.get(/databases/(default)/documents/private_chats/$(chatId)).data.participantIds &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*|application/pdf');
+    }
+
+    // ==================== MEDICAL DOCUMENTS (strict domain) ====================
+    // Healthcare-related documents (lab reports, prescriptions, etc.)
+    // outside the prescription flow. Owner-or-staff read; owner write;
+    // 5MB cap; jpeg/png/webp/PDF.
+    match /medical_documents/{userId}/{allPaths=**} {
+      allow read: if isOwner(userId) || isStaff();
+      allow write: if isOwner(userId) &&
+        request.resource.size < 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/(jpeg|png|webp)|application/pdf');
+    }
+
+    // ==================== BACKUPS (admin only, server-written) ====================
     match /backups/{allPaths=**} {
-      allow read: if request.auth != null && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
-      allow write: if false; // Only via Admin SDK
+      allow read: if isAdmin();
+      allow write: if false; // Only via Admin SDK (Cloud Functions / gcloud)
     }
 
-    // Default deny
+    // ==================== DEFAULT DENY ====================
     match /{allPaths=**} {
       allow read, write: if false;
     }

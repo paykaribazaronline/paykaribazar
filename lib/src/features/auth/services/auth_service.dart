@@ -86,16 +86,11 @@ class AuthService {
           if (!userDoc.exists || userData?['myReferralCode'] == null) {
             String name = userData?['name'] ?? 'User';
             if (!userDoc.exists) {
-              if (email.startsWith('admin')) {
-                role = 'admin';
-                name = 'Admin';
-              } else if (email.contains('staff')) {
-                role = 'staff';
-                name = 'Staff';
-              } else if (email.contains('rider') || email.contains('logistic')) {
-                role = 'logistic';
-                name = 'Rider';
-              }
+              // Role is provisioned via Firebase Custom Claims by the backend
+              // (onUserCreate trigger or provisionStaff/setUserRole callables).
+              // Email-string inference was an insecure authorization path and
+              // has been removed.
+              role ??= 'customer';
             }
             
             final myCode = _generateReferralCode(name, credential.user!.uid);
@@ -181,8 +176,11 @@ class AuthService {
         }
 
         // ৩. প্যারালাল টাস্কগুলোর জন্য অপেক্ষা করা
-        final results = await Future.wait([settingsFuture]); // Only wait for settings now
-        final settingsSnap = results[1] as DocumentSnapshot<Map<String, dynamic>>;
+        // BUGFIX (Task ID 3-4-5-6): the original code called `Future.wait([settingsFuture])`
+        // and then indexed `results[1]`, which throws a `RangeError` because
+        // the array has only one element (index 0). The fix is to await the
+        // single future directly.
+        final settingsSnap = await settingsFuture;
         
         final signupBonus = (settingsSnap.data()?['signupPoints'] ?? 
                              settingsSnap.data()?['signup_bonus'] ?? 100).toInt();
@@ -210,13 +208,22 @@ class AuthService {
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
 
-        final txRef = userRef.collection('transactions').doc();
-        batch.set(txRef, {
-          'title': 'স্বাগতম বোনাস (Welcome Bonus)',
-          'points': signupBonus,
-          'type': 'credit',
-          'createdAt': FieldValue.serverTimestamp(),
-        });
+        // REMOVED (Task ID 3-4-5-6): the welcome-bonus ledger write to
+        // `users/{uid}/transactions/{txId}`. Per the new `firestore.rules`
+        // (Task ID 7-8), `transactions` is a server-only collection — client
+        // writes are blocked with `allow write: if false`. The welcome
+        // bonus will be credited by a backend trigger (onUserCreate already
+        // provisions the `customer` role; the welcome-bonus credit is
+        // deferred to a follow-up trigger or the `runSeed`-style migration).
+        // Keeping the ledger server-authoritative prevents client-side
+        // point-fraud.
+        // final txRef = userRef.collection('transactions').doc();
+        // batch.set(txRef, {
+        //   'title': 'স্বাগতম বোনাস (Welcome Bonus)',
+        //   'points': signupBonus,
+        //   'type': 'credit',
+        //   'createdAt': FieldValue.serverTimestamp(),
+        // });
 
         if (referrerUid != null) {
           final referrerRef = _db.collection(HubPaths.users).doc(referrerUid);
@@ -242,7 +249,17 @@ class AuthService {
           });
         }
 
-        await batch.commit();
+        // CLEANUP PATH (Task ID 3-4-5-6): if the Firestore batch fails
+        // (e.g. quota, rules, network), we delete the just-created Auth
+        // user so the app doesn't end up in the "Auth user exists, Firestore
+        // profile missing" inconsistent state. The user can then re-attempt
+        // signup cleanly.
+        try {
+          await batch.commit();
+        } catch (e) {
+          try { await res.user?.delete(); } catch (_) {}
+          rethrow;
+        }
       }
       return res;
     } catch (e) {

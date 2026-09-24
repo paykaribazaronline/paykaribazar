@@ -68,32 +68,9 @@ void main() {
     // Initialize all services via GetIt (v2.0 Architecture)
     await ServiceInitializer.initialize();
 
-    // Run Database Seeding once
-    try {
-      await DatabaseSeeder.seedAiQuota().timeout(const Duration(seconds: 5));
-      debugPrint('AI Quota Seeded successfully');
-      
-      // Auto seed/sync locations if database is empty or has no districts
-      final snap = await FirebaseFirestore.instance.collection(HubPaths.locations)
-          .where('type', isEqualTo: 'district')
-          .limit(1)
-          .get()
-          .timeout(const Duration(seconds: 4));
-      if (snap.docs.isEmpty) {
-        await DatabaseSeeder.seedLocations().timeout(const Duration(seconds: 8));
-        debugPrint('✅ Auto-seeded locations at startup');
-      }
-
-      final infoSnap = await FirebaseFirestore.instance.doc(HubPaths.aboutUs).get().timeout(const Duration(seconds: 4));
-      final partnersSnap = await FirebaseFirestore.instance.doc(HubPaths.partners).get().timeout(const Duration(seconds: 4));
-      final staffSnap = await FirebaseFirestore.instance.doc(HubPaths.staffList).get().timeout(const Duration(seconds: 4));
-      if (!infoSnap.exists || !partnersSnap.exists || !staffSnap.exists) {
-        await DatabaseSeeder.seedStaticInfo().timeout(const Duration(seconds: 8));
-        debugPrint('✅ Auto-seeded static info documents');
-      }
-    } catch (e) {
-      debugPrint('Seeding Error / Auto-seed check failed: $e');
-    }
+    // Database seeding is now performed server-side via the `runSeed` callable
+    // Cloud Function (see functions/src/admin/seedLocations.ts).
+    // Admin app must NEVER mutate the database on startup — it is a read/ops UI.
 
     // DNA ENFORCED
     FirebaseFirestore.instance.settings = const Settings(

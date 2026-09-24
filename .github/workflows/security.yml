@@ -1,32 +1,61 @@
-name: Security - Firebase Rules & Secrets
+name: 🔐 Security — Rules, Secrets & Vulnerabilities
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop, staging]
     paths:
       - 'firestore.rules'
       - 'storage.rules'
       - 'firebase.json'
+      - 'functions/**'
+      - 'lib/**'
+      - '.env.example'
+      - '.github/workflows/security.yml'
   pull_request:
     paths:
       - 'firestore.rules'
       - 'storage.rules'
+      - 'firebase.json'
+      - 'functions/**'
+      - 'lib/**'
+      - '.env.example'
+  schedule:
+    # Nightly security sweep at 1 AM UTC
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1. Validate Firebase rules files
+  # ─────────────────────────────────────────────────────────────────────────
   validate-rules:
     name: Validate Firebase Rules
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
+
+      - name: Setup Java (emulator)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
 
       - name: Install Firebase CLI
         run: npm install -g firebase-tools
@@ -40,37 +69,36 @@ jobs:
             exit 1
           fi
 
-      - name: ✓ Validate Storage Rules Format
+      - name: Validate Storage Rules File Existence
         run: |
           if [ -f storage.rules ]; then
             echo "✅ storage.rules file found"
-            # Basic validation - check if it's valid Firestore rules syntax
             if grep -q "^rules_version" storage.rules || grep -q "^service" storage.rules; then
               echo "✅ storage.rules appears valid"
             else
-              echo "⚠️  storage.rules may need review"
+              echo "::error::storage.rules missing required `rules_version` or `service` declaration"
+              exit 1
             fi
           else
-            echo "⚠️  storage.rules not found"
+            echo "::error::storage.rules not found"
+            exit 1
           fi
 
-      - name: 🔐 Validate Required Secrets
+      - name: Validate Required Secrets
         run: |
           echo "🔐 Checking required GitHub secrets..."
           MISSING_SECRETS=""
-          
-          # Check FIREBASE_PROJECT_ID (from context)
+
           if [ -z "${{ secrets.FIREBASE_PROJECT_ID }}" ]; then
             MISSING_SECRETS="${MISSING_SECRETS}
           - FIREBASE_PROJECT_ID"
           fi
-          
-          # Check FIREBASE_TOKEN (from context)  
+
           if [ -z "${{ secrets.FIREBASE_TOKEN }}" ]; then
             MISSING_SECRETS="${MISSING_SECRETS}
           - FIREBASE_TOKEN"
           fi
-          
+
           if [ -n "$MISSING_SECRETS" ]; then
             echo "::error::❌ Missing required GitHub secrets:${MISSING_SECRETS}"
             echo ""
@@ -81,6 +109,9 @@ jobs:
             echo "✅ All required secrets are configured"
           fi
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2. Deploy rules — only on push to main
+  # ─────────────────────────────────────────────────────────────────────────
   deploy-rules:
     name: Deploy Firebase Rules
     runs-on: ubuntu-latest
@@ -89,7 +120,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -131,20 +162,173 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Deploy Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
 
-  secret-scan:
-    name: Scan for Secrets
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3. TruffleHog — FATAL. Scans the entire history diff for real secrets.
+  # ─────────────────────────────────────────────────────────────────────────
+  trufflehog-scan:
+    name: 🔑 TruffleHog Secret Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for proper scanning
 
-      - name: TruffleHog Secret Scan
+      - name: Determine base commit
+        id: trufflehog_base
+        run: |
+          if [ "${{ github.event_name }}" == "push" ]; then
+            if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+              echo "base=${{ github.event.before }}" >> $GITHUB_OUTPUT
+            else
+              echo "base=$(git rev-parse HEAD~1 2>/dev/null || echo 'HEAD~1')" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "base=$(git merge-base origin/${{ github.base_ref }} HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: TruffleHog scan (FATAL on verified secret)
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
+          base: ${{ steps.trufflehog_base.outputs.base }}
           head: HEAD
           extra_args: --debug --only-verified
-        continue-on-error: true  # Don't fail if no changes detected
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4. Gitleaks — FATAL. Complementary detector to TruffleHog.
+  # ─────────────────────────────────────────────────────────────────────────
+  gitleaks-scan:
+    name: 🐙 Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks (FATAL)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: 'true'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 5. Trivy filesystem scan — FATAL on CRITICAL/HIGH
+  # ─────────────────────────────────────────────────────────────────────────
+  trivy-scan:
+    name: 🛡️ Trivy Vulnerability Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Trivy filesystem scan (FATAL on CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 6. Forbidden-secret pattern guard — fail if known leaked placeholder
+  #    secrets reappear anywhere in the source tree.
+  # ─────────────────────────────────────────────────────────────────────────
+  forbidden-secret-patterns:
+    name: 🚫 Forbidden Secret Patterns
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for known-leaked placeholder secrets
+        run: |
+          set -e
+          PATTERNS=(
+            'paykari_bazar_api_key'
+            'paykari_bazar_api_secret_key_1234567890'
+            'MySecureAES256KeyFor32BytLength!'
+            '0123456789\.0123456789\.0123456789'
+          )
+          FOUND=0
+          for p in "${PATTERNS[@]}"; do
+            echo "🔎 searching for /$p/ ..."
+            if rg -n --no-binary "$p" --glob '!**/*.lock' --glob '!.git/**' . ; then
+              echo "::error::Forbidden secret pattern matched: $p"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" == "1" ]; then
+            echo "::error::Refusing to build — known placeholder secret detected in source tree. See docs/SECURITY.md#secret-management."
+            exit 1
+          fi
+          echo "✅ No forbidden placeholder secrets found."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 7. .env.example sanity check — may exist as a template but must NOT
+  #    contain real (long, non-placeholder) secret values.
+  # ─────────────────────────────────────────────────────────────────────────
+  env-example-check:
+    name: 🔎 .env.example Sanity Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure .env.example has no real secrets
+        run: |
+          set -e
+          if [ ! -f .env.example ]; then
+            echo "ℹ️  .env.example not present — skipping"
+            exit 0
+          fi
+          echo "🔎 scanning .env.example for real-looking secret values..."
+          # Real secrets are long and don't contain placeholder markers.
+          if rg -n '^[A-Z_]+[[:space:]]*=[[:space:]]*[^<].{16,}$' .env.example \
+             | rg -v -i '(your_|xxx|change-me|placeholder|example|<|\$\{|REPLACE_)'; then
+            echo "::error::.env.example appears to contain real (non-placeholder) secret values. Replace with placeholders only."
+            exit 1
+          fi
+          echo "✅ .env.example contains only placeholders."
+
+      - name: Ensure no .env file is checked in
+        run: |
+          # .env is dev-only and must never be committed.
+          if [ -f .env ]; then
+            echo "::error::.env is git-ignored and must NEVER be committed. Found at repo root."
+            exit 1
+          fi
+          if [ -f functions/.env ]; then
+            echo "::error::functions/.env is git-ignored and must NEVER be committed."
+            exit 1
+          fi
+          echo "✅ No .env file present in the repo."

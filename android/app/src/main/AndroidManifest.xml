@@ -44,6 +44,19 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- Payment gateway deep-link return: bKash / Nagad / SSLCommerz
+                 redirect back to the app after the user completes (or cancels)
+                 the payment on the gateway's web view. The Flutter side
+                 listens on these URLs (via `app_links` / `uni_links`) and
+                 triggers the `verifyPayment` callable. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="paykaribazar" android:host="payment" />
+                <data android:scheme="paykaribazar" android:host="payment-return" />
+            </intent-filter>
         </activity>
 
         <!-- Workmanager Background Tasks -->

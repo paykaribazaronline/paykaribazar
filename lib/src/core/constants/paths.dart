@@ -30,4 +30,47 @@ class HubPaths {
   // Interactive Collections
   static const String reviews = 'reviews';
   static const String applications = 'applications';
+
+  // ---------------------------------------------------------------------------
+  // New top-level collections added in Task ID 9 backend + Task ID 7-8 rules.
+  // These mirror the Firestore path layout the backend callables write to
+  // and that the locked-down `firestore.rules` grant server-only writes on.
+  // ---------------------------------------------------------------------------
+
+  /// `productPrices/{productId}` — B2B contract prices (server-only writes).
+  /// Read by `calcOrder` to resolve the contract price tier.
+  static const String productPrices = '$root/data/productPrices';
+
+  /// `inventoryReservations/{reservationId}` — atomic inventory holds
+  /// produced by the `reserveStock` callable. Owner-or-staff read,
+  /// server-only writes.
+  static const String inventoryReservations = 'inventoryReservations';
+
+  /// `payments/{paymentId}` — payment records for bKash / Nagad / SSLCommerz
+  /// / bank transfers. Owner-or-staff read, server-only writes.
+  static const String payments = 'payments';
+
+  /// `businesses/{businessId}` — B2B business profiles (reseller companies).
+  static const String businesses = 'businesses';
+
+  /// `auditLogs/{logId}` — server-side audit trail for all trust-boundary
+  /// operations (reservation create/release, order create/cancel, payment
+  /// verify, refund). Authenticated create, admin read.
+  static const String auditLogs = 'auditLogs';
+
+  /// `prescriptions/{prescriptionId}` — prescription image analysis records
+  /// produced by the `analyzePrescription` callable. Owner-or-staff read,
+  /// owner create, staff update.
+  static const String prescriptions = 'prescriptions';
+
+  /// `paymentslips` is a STORAGE path (not a Firestore collection) — the
+  /// bank-transfer flow uploads slips to
+  /// `paymentslips/{userId}/{paymentId}.jpg`. The reference is kept here so
+  /// the client-side Storage upload code can share a single source of truth
+  /// for the bucket name.
+  static const String paymentslipsStorage = 'paymentslips';
+
+  /// `payments/{paymentId}/refunds/{refundId}` — refund sub-collection.
+  /// Server-only writes; admin read.
+  static const String refundsSub = 'refunds';
 }

@@ -10,7 +10,17 @@ class CouponService {
     // Initialization logic if needed
   }
 
-  /// Validates coupon code and returns discount info
+  /// Validates coupon code and returns discount info.
+  ///
+  /// NOTE: This is a READ-ONLY PREVIEW. Authoritative coupon redemption
+  /// happens inside `calcOrder` server-side (transactional, with
+  /// double-redemption protection). The result of this method should
+  /// never be trusted for the final order total — it exists only to show
+  /// the user an optimistic "you will save ৳X" preview before they tap
+  /// "Place Order".
+  @Deprecated('Use CloudFunctionsClient.calcOrder with couponCode — the '
+      'backend validates transactionally. This client-side preview does not '
+      'enforce atomicity or double-redemption protection.')
   Future<Map<String, dynamic>?> validateCoupon({
     required String couponCode,
     required double cartTotal,
@@ -57,7 +67,15 @@ class CouponService {
     }
   }
 
-  /// Calculates discount amount based on coupon type
+  /// Calculates discount amount based on coupon type.
+  ///
+  /// NOTE: This method is retained for UI preview purposes only. The
+  /// backend's `calcOrder` callable is the source of truth for the
+  /// final discount applied to an order (see
+  /// `functions/src/pricing/calcOrder.ts`). This client-side mirror exists
+  /// so the cart screen can show an optimistic estimate before the user
+  /// taps checkout — it uses the same math but does NOT enforce atomicity,
+  /// MOQ, or double-redemption.
   double calculateDiscount({
     required String discountType,
     required double discountValue,

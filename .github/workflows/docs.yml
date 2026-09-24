@@ -1,46 +1,77 @@
-name: Documentation - Update README & Changelog
+name: Documentation - Update README, Changelog & API Docs
 
 on:
   release:
     types: [published]
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - 'functions/src/**'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   update-docs:
     name: Update Documentation
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.0'
+          cache: true
+
+      # ── Generate Release Notes ─────────────────────────────────────────
       - name: Generate Release Notes
         id: release_notes
+        if: github.event_name == 'release'
         run: |
           VERSION=${{ github.event.release.tag_name || github.ref_name }}
           CHANGELOG=$(cat << 'EOF'
           ## [$(VERSION)] - $(date +%Y-%m-%d)
 
           ### 🎉 Features
-          - Fleet management dashboard fully functional
-          - Real-time API quota tracking
-          - Enhanced error handling
+          - Production trust boundary enforced via Cloud Functions
+          - Real bKash / Nagad / SSLCommerz / Bank payment flows
+          - Transactional inventory reservation with HMAC-signed pricing snapshots
+          - Firestore / Storage rules emulator-tested on every PR
 
           ### 🔧 Improvements
-          - Automated CI/CD pipeline
-          - Firebase rules validation
-          - Improved build times with caching
+          - CI is now a real quality gate (no `continue-on-error`)
+          - Pinned every dependency in `pubspec.yaml`
+          - Documentation under `docs/` covers architecture, security, payments, deployment, runbook
 
           ### 🐛 Bug Fixes
-          - Fixed Fleet tab wiring in admin screen
-          - Resolved state management race conditions
+          - Fixed `Future.wait([settingsFuture])` → `results[1]` RangeError on signup
+          - Removed client-side money calculation in OrderService
+          - Removed client-side secrets from `security_initializer.dart`
 
           ### 📦 Deployment
           - **Shorebird OTA:** Automatic update enabled
           - **Firebase Hosting:** Web apps deployed
-          - **Google Play:** Beta track available
+          - **Google Play:** Beta track (future)
 
           EOF
           )
@@ -49,19 +80,61 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Update CHANGELOG.md
+        if: github.event_name == 'release'
         run: |
           cat <(echo "${{ steps.release_notes.outputs.changelog }}") CHANGELOG.md > CHANGELOG.md.tmp
           mv CHANGELOG.md.tmp CHANGELOG.md
 
       - name: Update README with latest version
+        if: github.event_name == 'release'
         run: |
-          sed -i 's/Version: .*/Version: ${{ github.event.release.tag_name || github.ref_name }}/' README.md
-          sed -i 's/Last Updated: .*/Last Updated: $(date -u +%Y-%m-%d)/' README.md
+          sed -i 's/Version: .*/Version: ${{ github.event.release.tag_name || github.ref_name }}/' README.md || true
+          sed -i 's/Last Updated: .*/Last Updated: $(date -u +%Y-%m-%d)/' README.md || true
 
+      # ── Build functions TypeScript API docs ─────────────────────────────
+      - name: Install TypeDoc (functions API doc generator)
+        run: |
+          if [ -f functions/package.json ]; then
+            (cd functions && npm ci && npm install --no-save typedoc typescript)
+          fi
+
+      - name: Generate functions API docs
+        run: |
+          if [ -f functions/tsconfig.json ]; then
+            (cd functions && npx typedoc --out ../docs/api/functions src/index.ts --tsconfig tsconfig.json --excludePrivate --excludeInternal --readme none) || {
+              echo "::warning::TypeDoc failed — falling back to a stub"
+              mkdir -p docs/api/functions
+              echo "# functions API reference" > docs/api/functions/README.md
+              echo "" >> docs/api/functions/README.md
+              echo "TypeDoc generation failed. See CI log for details." >> docs/api/functions/README.md
+            }
+          fi
+
+      # ── Lint markdown links ─────────────────────────────────────────────
+      - name: Lint markdown links (FATAL)
+        run: |
+          set -e
+          npm install -g markdown-link-check@latest
+          # Lint every top-level + docs/ markdown file
+          FAIL=0
+          for f in $(find . -name '*.md' -not -path './node_modules/*' -not -path './functions/node_modules/*' -not -path './.git/*'); do
+            echo "🔎 linting $f"
+            if ! markdown-link-check --quiet --alive 200,301,302,307,308 "$f"; then
+              echo "::error file=$f::Broken markdown link in $f"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" == "1" ]; then
+            echo "::error::Markdown link lint failed — fix broken links before merging."
+            exit 1
+          fi
+          echo "✅ All markdown links resolve."
+
+      # ── Commit / push ───────────────────────────────────────────────────
       - name: Commit documentation changes
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add CHANGELOG.md README.md
+          git add CHANGELOG.md README.md docs/api/functions
           git commit -m "docs: Update docs for release ${{ github.event.release.tag_name || github.ref_name }}" || echo "No changes to commit"
           git push

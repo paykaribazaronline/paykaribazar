@@ -95,7 +95,22 @@ app_cache_box.*
 /metadata
 node_modules/
 
-# Security Fix: Ignore sensitive credentials
+# Security Fix: Ignore sensitive credentials — NEVER commit
 .env
+.env.local
+.env.*.local
 keystore.properties
 key.properties
+google-services.json
+GoogleService-Info.plist
+service-account.json
+service-account-*.json
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Cloud Functions secrets + build artifacts
+functions/.env
+functions/.env.*
+functions/lib/
+functions/node_modules/
