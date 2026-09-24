@@ -1,7 +1,10 @@
 // ignore_for_file: deprecated_member_use_from_same_package
 
+import 'dart:convert';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import '../../features/checkout/models/pricing_snapshot.dart';
 import '../../features/inventory/models/reservation_model.dart';
@@ -134,18 +137,50 @@ class BankPaymentRequest {
   }
 }
 
+class _CallableResult {
+  final dynamic data;
+  const _CallableResult(this.data);
+}
+
 /// ---------------------------------------------------------------------------
-/// CloudFunctionsClient — a typed singleton around FirebaseFunctions.instance.
+/// CloudFunctionsClient — a typed singleton around FirebaseFunctions.instance
+/// or a custom Express HTTP API server (Render.com / Vercel).
 /// Every callable in the backend has a corresponding method here. GetIt is
 /// the source of truth for the instance; register via
 /// `getIt.registerSingleton<CloudFunctionsClient>(CloudFunctionsClient())`.
 /// ---------------------------------------------------------------------------
 
 class CloudFunctionsClient {
-  CloudFunctionsClient({FirebaseFunctions? functions})
-      : _functions = functions ?? FirebaseFunctions.instance;
+  /// Default backend API URL. If empty or null, fallback to direct Firebase Cloud Functions.
+  /// Can be supplied at compile-time via `--dart-define=BACKEND_API_URL=https://...`
+  /// or configured at runtime via `CloudFunctionsClient.defaultApiBaseUrl = '...'`.
+  static String defaultApiBaseUrl = const String.fromEnvironment(
+    'BACKEND_API_URL',
+    defaultValue: '',
+  );
+
+  CloudFunctionsClient({
+    FirebaseFunctions? functions,
+    String? apiBaseUrl,
+    http.Client? httpClient,
+    FirebaseAuth? auth,
+  })  : _functions = functions ?? FirebaseFunctions.instance,
+        _apiBaseUrl = (apiBaseUrl ?? defaultApiBaseUrl).trim(),
+        _http = httpClient ?? http.Client(),
+        _auth = auth ?? FirebaseAuth.instance;
 
   final FirebaseFunctions _functions;
+  String _apiBaseUrl;
+  final http.Client _http;
+  final FirebaseAuth _auth;
+
+  void setApiBaseUrl(String url) {
+    _apiBaseUrl = url.trim().endsWith('/')
+        ? url.trim().substring(0, url.trim().length - 1)
+        : url.trim();
+  }
+
+  String get apiBaseUrl => _apiBaseUrl;
 
   /// Returns a callable bound to the backend region.
   HttpsCallable _c(String name) =>
@@ -344,14 +379,29 @@ class CloudFunctionsClient {
     return Map<String, dynamic>.from(res.data as Map);
   }
 
+  // ------------------------------- user ------------------------------------
+
+  /// Triggers user role initialization (for Express / HTTP backends).
+  Future<Map<String, dynamic>> onUserCreate({String? role}) async {
+    final res = await _call('onUserCreate', <String, dynamic>{
+      if (role != null) 'role': role,
+    });
+    return Map<String, dynamic>.from(res.data as Map);
+  }
+
   // ------------------------------- helpers ---------------------------------
 
-  Future<HttpsCallableResult> _call(String name, Map<String, dynamic> args) async {
+  Future<_CallableResult> _call(String name, Map<String, dynamic> args) async {
     try {
+      if (_apiBaseUrl.isNotEmpty) {
+        return await _callHttp(name, args);
+      }
       final result = await _c(name).call(args);
-      return result;
+      return _CallableResult(result.data);
     } on FirebaseFunctionsException catch (e) {
       throw _mapException(e);
+    } on PaykariCloudFunctionException {
+      rethrow;
     } catch (e) {
       // Network down, host unreachable, App Check failed, etc.
       if (kDebugMode) debugPrint('[CloudFunctionsClient] $name failed: $e');
@@ -361,10 +411,79 @@ class CloudFunctionsClient {
     }
   }
 
+  Future<_CallableResult> _callHttp(String name, Map<String, dynamic> args) async {
+    final baseUrl = _apiBaseUrl.endsWith('/')
+        ? _apiBaseUrl.substring(0, _apiBaseUrl.length - 1)
+        : _apiBaseUrl;
+    final uri = Uri.parse('$baseUrl/api/$name');
+
+    final user = _auth.currentUser;
+    final token = user != null ? await user.getIdToken() : null;
+
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+
+    final res = await _http.post(
+      uri,
+      headers: headers,
+      body: jsonEncode({'data': args}),
+    );
+
+    dynamic decoded;
+    try {
+      decoded = res.body.isNotEmpty ? jsonDecode(res.body) : null;
+    } catch (_) {
+      decoded = null;
+    }
+
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      if (decoded is Map) {
+        if (decoded.containsKey('result')) {
+          return _CallableResult(decoded['result']);
+        }
+        if (decoded.containsKey('data')) {
+          return _CallableResult(decoded['data']);
+        }
+      }
+      return _CallableResult(decoded);
+    }
+
+    String code = 'internal';
+    String message = 'Server returned HTTP ${res.statusCode}';
+    Object? details;
+
+    if (decoded is Map && decoded['error'] is Map) {
+      final err = decoded['error'] as Map;
+      message = err['message']?.toString() ?? message;
+      final rawStatus = err['status']?.toString().toLowerCase().replaceAll('_', '-') ?? 'internal';
+      code = rawStatus;
+      details = err['details'];
+    } else if (res.statusCode == 401) {
+      code = 'unauthenticated';
+      message = 'Sign-in required.';
+    } else if (res.statusCode == 403) {
+      code = 'permission-denied';
+      message = 'Permission denied.';
+    } else if (res.statusCode == 404) {
+      code = 'not-found';
+      message = 'Not found.';
+    }
+
+    throw _mapCodeAndMessage(code, message, details);
+  }
+
   PaykariCloudFunctionException _mapException(FirebaseFunctionsException e) {
-    final msg = e.message ?? '';
-    final details = e.details;
-    switch (e.code) {
+    return _mapCodeAndMessage(e.code, e.message ?? '', e.details);
+  }
+
+  PaykariCloudFunctionException _mapCodeAndMessage(
+    String code,
+    String msg,
+    Object? details,
+  ) {
+    switch (code) {
       case 'invalid-argument':
         return InvalidArgumentException(msg, details: details);
       case 'failed-precondition':
@@ -401,7 +520,7 @@ class CloudFunctionsClient {
       case 'internal':
         return CloudFunctionUnavailableException(msg);
       default:
-        return PaykariCloudFunctionException(e.code, msg, details: details);
+        return PaykariCloudFunctionException(code, msg, details: details);
     }
   }
 

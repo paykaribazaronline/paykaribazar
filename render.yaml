@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: paykaribazar-backend
+    env: node
+    plan: free
+    rootDir: functions
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+      - key: FIREBASE_ADMIN_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: WEBHOOK_HMAC_SECRET
+        generateValue: true
+      - key: BKASH_SANDBOX
+        value: "true"
+      - key: NAGAD_SANDBOX
+        value: "true"
+      - key: SSLCOMMERZ_SANDBOX
+        value: "true"

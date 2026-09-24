@@ -140,10 +140,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [lint, typecheck, unit-test]
-    # Auto-deploy to staging on push to main; production only via manual dispatch
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # Deploy is manual dispatch only (to prevent billing failure on push)
+    if: github.event_name == 'workflow_dispatch'
     environment:
       # `environment` blocks with required reviewers trigger a manual
       # approval gate in GitHub before the job can start. Configure the

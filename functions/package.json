@@ -11,6 +11,8 @@
     "clean": "rimraf lib",
     "lint": "eslint --ext .ts src",
     "build": "npm run clean && tsc",
+    "start": "node lib/server.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "serve": "npm run build && firebase emulators:start --only functions",
     "shell": "npm run build && firebase functions:shell",
     "deploy": "npm run build && firebase deploy --only functions",
@@ -18,14 +20,20 @@
   },
   "dependencies": {
     "axios": "^1.7.7",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.3",
+    "express": "^5.2.1",
     "firebase-admin": "^12.6.0",
     "firebase-functions": "^4.9.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "eslint": "^8.57.1",
     "rimraf": "^5.0.10",
+    "ts-node-dev": "^2.0.0",
     "typescript": "^5.6.2"
   }
 }
