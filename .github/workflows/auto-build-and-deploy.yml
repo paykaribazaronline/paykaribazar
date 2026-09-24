@@ -750,10 +750,36 @@ jobs:
         run: bash .github/scripts/create_dummy_firebase_options.sh
 
       - name: Configure signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
         run: |
           mkdir -p android/app
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
-        if: env.KEYSTORE_BASE64 != ''
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+            cat <<EOF > android/keystore.properties
+storePassword=${KEYSTORE_PASSWORD}
+keyPassword=${KEY_PASSWORD}
+keyAlias=${KEY_ALIAS}
+storeFile=app/upload-keystore.jks
+MAPS_API_KEY=${MAPS_API_KEY}
+EOF
+            echo "✅ Production keystore and keystore.properties configured"
+          else
+            echo "::warning::KEYSTORE_BASE64 not configured. Generating temporary self-signed keystore for CI build verification."
+            keytool -genkey -v -keystore android/app/upload-keystore.jks -alias dummyalias -keyalg RSA -keysize 2048 -validity 10000 -storepass dummypass -keypass dummypass -dname "CN=CI, OU=CI, O=CI, L=CI, S=CI, C=US"
+            cat <<EOF > android/keystore.properties
+storePassword=dummypass
+keyPassword=dummypass
+keyAlias=dummyalias
+storeFile=app/upload-keystore.jks
+MAPS_API_KEY=dummy_maps_key
+EOF
+            echo "✅ Temporary keystore.properties generated for CI build check"
+          fi
 
       - name: Setup Shorebird
         uses: shorebirdtech/setup-shorebird@v1
