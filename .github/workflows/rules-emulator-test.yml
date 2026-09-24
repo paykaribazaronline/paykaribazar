@@ -86,9 +86,12 @@ jobs:
 
       - name: Run rules tests against the Firestore + Storage emulator (FATAL)
         run: |
-          echo "🛡️  Booting Firestore + Storage emulators and running dart test test/firestore_rules/ ..."
+          echo "🛡️  Booting Firestore + Storage emulators and running flutter test test/firestore_rules/ ..."
+          # Use `flutter test` (not `dart test`) so the test package version is
+          # the one pinned by flutter_test in the Flutter SDK — avoids analyzer
+          # / matcher version-solving conflicts with hive_generator.
           firebase emulators:exec --only firestore,storage \
-            "dart test test/firestore_rules/ --reporter expanded"
+            "flutter test test/firestore_rules/ --reporter expanded"
         env:
           FIREBASE_CLI_PREVIEWS: storageEmulator
 
