@@ -111,7 +111,7 @@ dependencies:
   sensors_plus: ^7.0.0
   share_plus: ^10.1.4
   flutter_dotenv: ^6.0.1
-  csv: ^8.0.0
+  csv: ^6.0.0
   sentry_flutter: ^9.22.0
   flutter_local_notifications: ^22.0.1
   package_info_plus: ^9.0.0
