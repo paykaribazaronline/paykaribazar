@@ -50,7 +50,7 @@ permissions:
   id-token: write   # Required for Workload Identity Federation
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'  # Node 22 LTS — Node 20 deprecated by GitHub Actions
   FUNCTIONS_REGION: 'asia-southeast1'
 
 jobs:
@@ -59,14 +59,14 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Lint (eslint)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — avoid ubuntu-latest Ubuntu 26 migration that breaks our build
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -85,14 +85,14 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   typecheck:
     name: Typecheck (tsc --noEmit)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — avoid ubuntu-latest Ubuntu 26 migration that breaks our build
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -111,14 +111,14 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   unit-test:
     name: Unit Tests (jest/vitest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — avoid ubuntu-latest Ubuntu 26 migration that breaks our build
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -141,7 +141,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   deploy:
     name: Deploy (${{ github.event.inputs.environment || 'staging' }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — avoid ubuntu-latest Ubuntu 26 migration that breaks our build
     timeout-minutes: 30
     needs: [lint, typecheck, unit-test]
     # Deploy is manual dispatch only (to prevent billing failure on push)
@@ -154,10 +154,10 @@ jobs:
       name: ${{ github.event.inputs.environment || 'staging' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'

@@ -107,7 +107,7 @@ jobs:
       has_flutter_changes: ${{ steps.changes.outputs.flutter == 'true' || steps.changes.outputs.admin == 'true' || steps.changes.outputs.customer == 'true' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # Full history for versioning
 
@@ -251,10 +251,10 @@ jobs:
     if: needs.setup.outputs.has_rules_changes == 'true' || needs.setup.outputs.has_flutter_changes == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -322,12 +322,12 @@ jobs:
     if: needs.setup.outputs.has_functions_changes == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'  # Node 22 LTS — Node 20 deprecated by GitHub Actions
           cache: 'npm'
           cache-dependency-path: functions/package-lock.json
 
@@ -384,7 +384,7 @@ jobs:
     # failed `setup` skips this job by default.
     if: needs.setup.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -432,7 +432,7 @@ jobs:
     if: needs.setup.outputs.has_code_changes == 'true' && needs.prepare.result == 'success' && github.event.inputs.skip_tests != 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: # Full history is not needed for analysis and testing
           fetch-depth: 1
 
@@ -494,7 +494,7 @@ jobs:
     if: needs.setup.outputs.has_code_changes == 'true' && needs.prepare.result == 'success' && github.event.inputs.skip_tests != 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: # Full history is not needed for testing
           fetch-depth: 1
 
@@ -541,7 +541,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
       - name: Run Trivy vulnerability scanner
@@ -581,7 +581,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Determine base commit
@@ -621,7 +621,7 @@ jobs:
     timeout-minutes: 10
     needs: setup
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Scan for known-leaked placeholder secrets
         run: |
           set -e
@@ -688,7 +688,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -697,7 +697,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -774,7 +774,7 @@ jobs:
       KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1  # build_number comes from setup job output — no full history needed
 
@@ -962,7 +962,7 @@ jobs:
         web-app: [customer, admin]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -1033,12 +1033,12 @@ jobs:
     if: needs.setup.outputs.should_deploy == 'true' && (github.event.inputs.deploy_to == 'all' || github.event.inputs.deploy_to == 'firebase-only' || github.event_name == 'push')
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: # Full history is not needed for deployment
           fetch-depth: 1
 
       - name: Setup Node.js & Firebase CLI
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -1084,7 +1084,7 @@ jobs:
     if: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -1139,7 +1139,7 @@ jobs:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # Ensure full history for release notes
 

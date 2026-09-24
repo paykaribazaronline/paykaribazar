@@ -18,7 +18,7 @@
  * `releaseReservation` call will decrement `reservedStock` once expired.
  */
 import { onCall } from "firebase-functions/v2/https";
-import { db, assertAuth, FieldValue, Timestamp } from "../admin";
+import { db, assertAuth, Timestamp } from "../admin";
 import {
   errInvalidArgument,
   errFailedPrecondition,

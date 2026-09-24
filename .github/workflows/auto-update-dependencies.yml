@@ -23,11 +23,11 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   update-dependencies:
     name: 🆙 Update Flutter Dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -125,18 +125,18 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   update-npm-dependencies:
     name: 🆙 Update npm Dependencies (functions/)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned — ubuntu-latest will migrate to Ubuntu 26
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'  # Node 22 LTS — Node 20 deprecated by GitHub Actions
           cache: 'npm'
           cache-dependency-path: functions/package-lock.json
 
