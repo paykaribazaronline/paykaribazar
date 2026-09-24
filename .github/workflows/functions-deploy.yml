@@ -23,6 +23,7 @@ on:
     paths:
       - 'functions/**'
       - '.github/workflows/functions-deploy.yml'
+      - 'firebase.json'
       - 'firestore.rules'
       - 'storage.rules'
   workflow_dispatch:
