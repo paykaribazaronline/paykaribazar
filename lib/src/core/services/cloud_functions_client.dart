@@ -198,7 +198,7 @@ class CloudFunctionsClient {
   /// Returns a callable bound to the backend region.
   HttpsCallable _c(String name) => _functions.httpsCallable(
         name,
-        options: const HttpsCallableOptions(timeout: Duration(seconds: 30)),
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
       );
 
   // ------------------------------- pricing ---------------------------------
