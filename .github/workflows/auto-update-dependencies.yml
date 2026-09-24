@@ -158,7 +158,12 @@ jobs:
         run: |
           # `npm outdated` exits non-zero if anything is outdated.
           # We don't make it fatal (patch releases are fine) — but `npm audit` is.
-          npm audit --audit-level=moderate --omit=dev
+          # Per issue #3: threshold is `high` (not `moderate`) to avoid blocking
+          # on non-actionable transitive advisories like `uuid < 11.1.1` which
+          # come in via firebase-admin/gaxios and have no direct consumer path
+          # in our codebase. Moderate advisories are still reported (exit 0)
+          # but don't block the dependency-update PR.
+          npm audit --audit-level=high --omit=dev
 
       - name: Verify functions build
         working-directory: functions
