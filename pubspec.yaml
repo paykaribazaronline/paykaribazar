@@ -30,7 +30,13 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.5.0 <4.0.0'
+  # Dart 3.9+ is required because shared_preferences ^2.5.5 (and several
+  # Firebase plugins transitive deps) declare `sdk: '>=3.9.0 <4.0.0'`.
+  # Flutter 3.35.0 ships Dart 3.9 — all CI workflows pin FLUTTER_VERSION=3.35.0
+  # to satisfy this. Bumping Flutter DOWN to 3.27/3.29 was the root cause of
+  # every recent `flutter pub get` failure in the rules-emulator-test and
+  # auto-build-and-deploy pipelines.
+  sdk: '>=3.9.0 <4.0.0'
 
 dependencies:
   flutter:

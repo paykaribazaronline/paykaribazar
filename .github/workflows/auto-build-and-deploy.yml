@@ -41,7 +41,10 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE22: true
-  FLUTTER_VERSION: '3.27.4'
+  # Flutter 3.35.0 ships Dart 3.9 — required by shared_preferences ^2.5.5 and
+  # other transitive deps. Older versions (3.27/3.29) caused `flutter pub get`
+  # to fail with "version solving failed" in the rules-emulator-test job.
+  FLUTTER_VERSION: '3.35.0'
   JAVA_VERSION: '17'
   NODE_VERSION: '22'
 
