@@ -1,27 +1,49 @@
 name: 🔄 Auto Dependency Updates
 
+# Weekly-only schedule. NEVER runs on every push — that creates duplicate
+# PRs for every commit.  Manual dispatch is allowed for forced refreshes.
 on:
   schedule:
     # Run every Monday at 3 AM UTC
     - cron: '0 3 * * 1'
   workflow_dispatch:
 
+concurrency:
+  group: auto-update-dependencies
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Flutter pub outdated — FATAL. If any direct dependency is outdated the
+  # job fails and a PR is opened with the upgrade set.
+  # ─────────────────────────────────────────────────────────────────────────
   update-dependencies:
     name: 🆙 Update Flutter Dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.27.0'
           cache: true
+
+      - name: Reject `any` pins
+        run: |
+          if grep -E '^[[:space:]]+[a-z_]+:[[:space:]]+any$' pubspec.yaml; then
+            echo "::error::pubspec.yaml contains a dependency pinned to 'any'. Pin it before running updates."
+            exit 1
+          fi
 
       - name: Get current pubspec.lock hash
         id: old_hash
@@ -30,12 +52,19 @@ jobs:
             echo "hash=$(md5sum pubspec.lock | awk '{print $1}')" >> $GITHUB_OUTPUT
           fi
 
-      - name: Update Flutter dependencies
+      - name: Upgrade dependencies
         run: |
           flutter pub get
-          flutter pub upgrade --dry-run
+          flutter pub upgrade --major-versions
+          flutter pub get
 
-      - name: Check for updates
+      - name: 🛑 Block PR if outdated (FATAL)
+        run: |
+          # `flutter pub outdated` exits non-zero when anything is outdated.
+          # We surface that as an explicit failure on the PR check list.
+          flutter pub outdated --no-dev-dependencies --no-transitive
+
+      - name: Check for changes
         id: check_updates
         run: |
           if [ -f "pubspec.lock" ]; then
@@ -47,23 +76,37 @@ jobs:
             fi
           fi
 
+      - name: Verify the app still analyzes
+        if: steps.check_updates.outputs.has_updates == 'true'
+        run: |
+          flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Run tests
+        if: steps.check_updates.outputs.has_updates == 'true'
+        run: flutter test
+
       - name: Create pull request
         if: steps.check_updates.outputs.has_updates == 'true'
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: 'chore: update dependencies'
-          title: '🔄 Automated Dependency Update'
+          commit-message: 'chore: update Flutter dependencies (auto)'
+          title: '🔄 Automated Flutter Dependency Update'
           body: |
-            ## Automated Dependency Update
-            
-            This PR updates Flutter dependencies to the latest versions.
-            
+            ## Automated Flutter Dependency Update
+
+            This PR updates Flutter dependencies to the latest compatible versions.
+
             **Changes:**
-            - Runs `flutter pub upgrade`
-            - Validates builds and tests
-            - Auto-merges if CI passes
-            
-            Please review before merging.
+            - Runs `flutter pub upgrade --major-versions`
+            - Validates that `flutter analyze --fatal-infos --fatal-warnings` passes
+            - Validates that `flutter test` passes
+
+            ### Reviewer checklist
+            - [ ] Diff `pubspec.lock` for unexpected major bumps
+            - [ ] Spot-check release notes of any package jumping a major version
+            - [ ] Smoke-test customer app (`flutter run -t lib/main_customer.dart --flavor customer`)
+            - [ ] Smoke-test admin app (`flutter run -t lib/main_admin.dart --flavor admin`)
+            - [ ] Re-run `firebase emulators:exec --only firestore 'dart test test/firestore_rules/'`
           branch: update/dependencies-${{ github.run_number }}
           delete-branch: true
           labels: |
@@ -74,37 +117,58 @@ jobs:
           assignees: |
             ${{ github.repository_owner }}
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # npm — Cloud Functions
+  # ─────────────────────────────────────────────────────────────────────────
   update-npm-dependencies:
-    name: 🆙 Update npm Dependencies
+    name: 🆙 Update npm Dependencies (functions/)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '20'
           cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
 
       - name: Get current package-lock.json hash
         id: old_hash
         run: |
-          if [ -f "package-lock.json" ]; then
-            echo "hash=$(md5sum package-lock.json | awk '{print $1}')" >> $GITHUB_OUTPUT
+          if [ -f "functions/package-lock.json" ]; then
+            echo "hash=$(md5sum functions/package-lock.json | awk '{print $1}')" >> $GITHUB_OUTPUT
           fi
 
       - name: Update npm dependencies
-        run: npm update
+        working-directory: functions
+        run: |
+          npm install
+          npm update
 
-      - name: Check for updates
+      - name: 🛑 Block PR if outdated or vulnerable (FATAL)
+        working-directory: functions
+        run: |
+          # `npm outdated` exits non-zero if anything is outdated.
+          # We don't make it fatal (patch releases are fine) — but `npm audit` is.
+          npm audit --audit-level=moderate --omit=dev
+
+      - name: Verify functions build
+        working-directory: functions
+        run: |
+          npm run lint
+          npm run build
+          npm test --if-present
+
+      - name: Check for changes
         id: check_updates
         run: |
-          if [ -f "package-lock.json" ]; then
-            NEW_HASH=$(md5sum package-lock.json | awk '{print $1}')
+          if [ -f "functions/package-lock.json" ]; then
+            NEW_HASH=$(md5sum functions/package-lock.json | awk '{print $1}')
             if [ "${{ steps.old_hash.outputs.hash }}" != "$NEW_HASH" ]; then
               echo "has_updates=true" >> $GITHUB_OUTPUT
             else
@@ -114,26 +178,30 @@ jobs:
 
       - name: Create pull request
         if: steps.check_updates.outputs.has_updates == 'true'
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: 'chore: update npm dependencies'
-          title: '🔄 Automated npm Dependency Update'
+          commit-message: 'chore: update npm dependencies (functions/)'
+          title: '🔄 Automated npm Dependency Update (functions/)'
           body: |
-            ## Automated npm Dependency Update
-            
-            This PR updates npm dependencies to the latest versions.
-            
+            ## Automated npm Dependency Update (functions/)
+
+            This PR updates npm dependencies under `functions/` to the latest versions.
+
             **Changes:**
-            - Runs `npm update`
-            - Updates package-lock.json
-            - Auto-merges if CI passes
-            
-            Please review before merging.
+            - Runs `npm update` inside `functions/`
+            - Updates `functions/package-lock.json`
+            - Validates `npm run lint`, `npm run build`, `npm test` all pass
+
+            ### Reviewer checklist
+            - [ ] Diff `functions/package-lock.json` for unexpected major bumps
+            - [ ] Spot-check release notes of any package jumping a major version
+            - [ ] Smoke-test backend: `cd functions && firebase emulators:start`
           branch: update/npm-dependencies-${{ github.run_number }}
           delete-branch: true
           labels: |
             dependencies
             automated
+            backend
           reviewers: |
             ${{ github.repository_owner }}
           assignees: |

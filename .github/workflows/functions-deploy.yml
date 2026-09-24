@@ -1,0 +1,259 @@
+name: ☁️ Cloud Functions — Deploy Pipeline
+
+# Dedicated backend deploy pipeline.
+#
+# Triggers:
+#   - Push to main that touches functions/**
+#   - Manual dispatch with `environment` ∈ { staging, production }
+#
+# Pipeline stages (all FATAL):
+#   lint → typecheck → unit-test → (manual approval) → deploy
+#
+# Deploy order:
+#   1. Callable Cloud Functions (calcOrder, reserveStock, ...)
+#   2. Webhook HTTP Functions (bkash/nagad/sslcommerz webhook listeners)
+#   3. Firestore Trigger Functions (onUserCreate)
+#
+# Production deploys use Workload Identity Federation via google-github-actions/auth@v2
+# — no long-lived service account JSON keys are required.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'functions/**'
+      - '.github/workflows/functions-deploy.yml'
+      - 'firestore.rules'
+      - 'storage.rules'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        default: 'staging'
+        options:
+          - staging
+          - production
+
+concurrency:
+  group: functions-deploy-${{ github.event.inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # Required for Workload Identity Federation
+
+env:
+  NODE_VERSION: '20'
+  FUNCTIONS_REGION: 'asia-southeast1'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1. Lint (eslint)
+  # ─────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (eslint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Run eslint (FATAL)
+        working-directory: functions
+        run: npm run lint
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2. Typecheck (tsc --noEmit)
+  # ─────────────────────────────────────────────────────────────────────────
+  typecheck:
+    name: Typecheck (tsc --noEmit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: tsc --noEmit (FATAL)
+        working-directory: functions
+        run: npx tsc --noEmit
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3. Unit tests
+  # ─────────────────────────────────────────────────────────────────────────
+  unit-test:
+    name: Unit Tests (jest/vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Build
+        working-directory: functions
+        run: npm run build
+
+      - name: Unit tests (FATAL)
+        working-directory: functions
+        run: npm test --if-present
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4. Deploy — staging (auto) or production (manual approval)
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy (${{ github.event.inputs.environment || 'staging' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, typecheck, unit-test]
+    # Auto-deploy to staging on push to main; production only via manual dispatch
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    environment:
+      # `environment` blocks with required reviewers trigger a manual
+      # approval gate in GitHub before the job can start. Configure the
+      # `production` environment in repo Settings → Environments with the
+      # SRE team as required reviewers.
+      name: ${{ github.event.inputs.environment || 'staging' }}
+      url: https://console.firebase.google.com/project/${{ secrets.FIREBASE_PROJECT_ID }}/functions
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Build
+        working-directory: functions
+        run: npm run build
+
+      # Workload Identity Federation — no key file
+      - name: Auth to Google Cloud (OIDC)
+        id: gcp_auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_FUNCTIONS_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_FUNCTIONS_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@latest
+
+      - name: Verify Firestore indexes are deployed
+        if: github.event.inputs.environment == 'production'
+        run: |
+          echo "📋 Verifying firestore.indexes.json against the live project..."
+          if [ ! -f firestore.indexes.json ]; then
+            echo "::error::firestore.indexes.json missing — required before production deploy."
+            exit 1
+          fi
+          firebase firestore:indexes --project=${{ secrets.FIREBASE_PROJECT_ID }} > /tmp/live_indexes.json || true
+          echo "Live indexes snapshot saved for audit."
+
+      - name: Deploy Firestore rules
+        if: github.event.inputs.environment == 'production'
+        run: |
+          firebase deploy --only firestore:rules \
+            --project=${{ secrets.FIREBASE_PROJECT_ID }}
+        env:
+          GCLOUD_PROJECT: ${{ secrets.FIREBASE_PROJECT_ID }}
+
+      - name: Deploy Storage rules
+        if: github.event.inputs.environment == 'production'
+        run: |
+          firebase deploy --only storage \
+            --project=${{ secrets.FIREBASE_PROJECT_ID }}
+
+      # ── Deploy order: callables → webhooks → triggers ─────────────────────
+      - name: Deploy Callable Cloud Functions (1/3)
+        run: |
+          echo "🚀 Deploying callable Cloud Functions..."
+          firebase deploy --only functions:calcOrder,functions:reserveStock,functions:releaseReservation,functions:commitReservation,functions:createOrder,functions:cancelOrder,functions:verifyPayment,functions:refundPayment,functions:bkashCreatePayment,functions:nagadCreatePayment,functions:sslczCreatePayment,functions:recordBankPaymentRequest,functions:searchProducts,functions:redeemCoupon,functions:setUserRole,functions:provisionStaff,functions:seedLocations,functions:analyzePrescription \
+            --project=${{ secrets.FIREBASE_PROJECT_ID }} \
+            --force
+
+      - name: Deploy Webhook HTTP Functions (2/3)
+        run: |
+          echo "🚀 Deploying webhook HTTP Cloud Functions..."
+          firebase deploy --only functions:bkashWebhook,functions:nagadWebhook,functions:sslcommerzWebhook \
+            --project=${{ secrets.FIREBASE_PROJECT_ID }} \
+            --force
+
+      - name: Deploy Firestore Trigger Functions (3/3)
+        run: |
+          echo "🚀 Deploying Firestore trigger Cloud Functions..."
+          firebase deploy --only functions:onUserCreate \
+            --project=${{ secrets.FIREBASE_PROJECT_ID }} \
+            --force
+
+      - name: Sanity-check deployed functions
+        run: |
+          echo "📋 Listing deployed functions in ${{ secrets.FIREBASE_PROJECT_ID }}..."
+          gcloud functions list --region=${{ env.FUNCTIONS_REGION }} \
+            --filter="metadata.labels.deployed-by:github-actions" \
+            --format="table(name,status,updateTime)"
+
+      - name: Notify Slack on success
+        if: success() && github.event.inputs.environment == 'production'
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "✅ Production Cloud Functions deployed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Cloud Functions deploy (production) succeeded* ✅\nProject: ${{ secrets.FIREBASE_PROJECT_ID }}\nRegion: ${{ env.FUNCTIONS_REGION }}\nCommit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

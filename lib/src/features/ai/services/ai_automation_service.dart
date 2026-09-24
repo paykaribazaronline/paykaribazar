@@ -1,10 +1,24 @@
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
+import 'dart:typed_data';
+import 'package:google_generative_ai/google_generative_ai.dart';
 import '../../../di/service_locator.dart';
+import '../../../core/services/secrets_service.dart';
 import 'ai_service.dart';
+import 'gemini_provider.dart';
 import 'api_quota_service.dart';
 import '../../../core/constants/paths.dart';
+
+// NOTE:
+// AI is a merchandising ASSISTANT, never a source of truth for price/stock/
+// payment. Those remain backend-only — the `calcOrder`, `reserveStock`,
+// `createOrder`, and `verifyPayment` Cloud Functions are the canonical
+// authority for every money / inventory / payment decision. This service
+// only generates descriptive product metadata (name, description, SEO tags)
+// and an audit trail; it MUST NOT be used to set `wholesalePrice`, `stock`,
+// `reservedStock`, `wholesaleTieredPrices`, or any payment field.
+// The new `firestore.rules` block all client writes to those keys.
 
 class AiAutomationService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -13,11 +27,25 @@ class AiAutomationService {
 
   /// The "Miracle" Method: Takes a product ID and optional image bytes.
   /// Automatically generates Name, Description, and SEO tags based on minimal input.
+  ///
+  /// In production this MUST be invoked via the backend `analyzePrescription`-
+  /// style callable (see `functions/src/health/prescriptionProcess.ts`) so the
+  /// Gemini API key never ships in the client binary. This client-side
+  /// implementation is only allowed in dev builds — release builds throw.
   Future<void> smartEnrichProduct({
     required String productId,
     List<int>? imageBytes,
     String? basicName,
   }) async {
+    // Production guard: AI enrichment must run server-side in production.
+    if (kReleaseMode) {
+      throw UnsupportedError(
+        'AI enrichment must run server-side in production. '
+        'Call the analyzePrescription-style callable in functions/src/health/ '
+        'instead of this client-side method.',
+      );
+    }
+
     try {
       // 1. Prepare the Multimodal Prompt
       final prompt = '''
@@ -33,28 +61,70 @@ class AiAutomationService {
         "seoTags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
       }
       Ensure the tone is professional, trustworthy, and optimized for SEO.
+      Return ONLY the JSON object — no markdown fences, no commentary.
       ''';
 
-      // 2. Call AI (Assuming AIService supports multimodal or we use the text response)
-      // If imageBytes is provided, we use Gemini's vision capability.
-      final aiResponse = await _ai.generate(prompt); 
-      
+      // 2. Call AI. If imageBytes is provided, pass them as a multimodal
+      //    content (TextPart + DataPart) to Gemini's vision model.
+      final String aiResponse;
+      if (imageBytes != null && imageBytes.isNotEmpty) {
+        aiResponse = await _generateWithImage(prompt, imageBytes);
+      } else {
+        aiResponse = await _ai.generate(prompt);
+      }
+
       // 3. Simple JSON extraction (Cleaning potential AI markdown)
-      final jsonString = aiResponse.contains('{') 
-          ? aiResponse.substring(aiResponse.indexOf('{'), aiResponse.lastIndexOf('}') + 1)
+      final jsonString = aiResponse.contains('{')
+          ? aiResponse.substring(
+              aiResponse.indexOf('{'),
+              aiResponse.lastIndexOf('}') + 1,
+            )
           : '';
 
-      if (jsonString.isEmpty) return;
+      if (jsonString.isEmpty) {
+        await _db.collection('ai_audit_logs').add({
+          'productId': productId,
+          'action': 'SMART_ENRICHMENT',
+          'status': 'error',
+          'error': 'AI response contained no JSON object',
+          'rawResponse': aiResponse,
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+        return;
+      }
 
-      // In a real scenario, use jsonDecode. Here we update the product.
-      // This makes the "Miracle" happen: one click updates everything.
+      // 4. Parse the JSON. Wrap in try/catch with a clear audit error.
+      Map<String, dynamic> parsed;
+      try {
+        parsed = Map<String, dynamic>.from(jsonDecode(jsonString) as Map);
+      } catch (parseError) {
+        await _db.collection('ai_audit_logs').add({
+          'productId': productId,
+          'action': 'SMART_ENRICHMENT',
+          'status': 'error',
+          'error': 'JSON parse failed: $parseError',
+          'rawJsonString': jsonString,
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+        return;
+      }
+
+      // 5. ACTUALLY APPLY the generated fields to the product.
+      //    NOTE: we deliberately do NOT write `wholesalePrice`, `stock`,
+      //    `reservedStock`, or any pricing/payment key here — AI is a
+      //    merchandising assistant only. The new `firestore.rules` would
+      //    reject such writes anyway, but we also guard at the call site.
       await _db.collection(HubPaths.products).doc(productId).update({
+        'name': parsed['name'] ?? basicName ?? 'Untitled Product',
+        'nameBn': parsed['nameBn'] ?? '',
+        'description': parsed['description'] ?? '',
+        'descriptionBn': parsed['descriptionBn'] ?? '',
+        'suggestedCategory': parsed['suggestedCategory'],
+        'seoTags': parsed['seoTags'] ?? const <String>[],
         'aiOptimized': true,
         'aiAuditPending': false,
         'lastAiUpdate': FieldValue.serverTimestamp(),
-        // We assume the caller parses the JSON and passes it here, 
-        // but for the sake of the "miracle", we'll simulate the logic:
-        'aiMetadata': jsonString, 
+        'aiMetadata': jsonString,
       });
 
       // Log the success
@@ -62,6 +132,19 @@ class AiAutomationService {
         'productId': productId,
         'action': 'SMART_ENRICHMENT',
         'status': 'success',
+        'usedImage': imageBytes != null && imageBytes.isNotEmpty,
+        'fieldsWritten': const [
+          'name',
+          'nameBn',
+          'description',
+          'descriptionBn',
+          'suggestedCategory',
+          'seoTags',
+          'aiOptimized',
+          'aiAuditPending',
+          'lastAiUpdate',
+          'aiMetadata',
+        ],
         'timestamp': FieldValue.serverTimestamp(),
       });
 
@@ -73,6 +156,63 @@ class AiAutomationService {
         'error': e.toString(),
         'timestamp': FieldValue.serverTimestamp(),
       });
+    }
+  }
+
+  /// Private helper: builds a multimodal Gemini `GenerativeModel` content
+  /// containing both a `TextPart` (the prompt) and a `DataPart` (the JPEG
+  /// image bytes) and returns the text response. We re-use the GeminiProvider
+  /// already configured by `AIService` so the API key, quota tracking, and
+  /// fallback chain all stay intact.
+  Future<String> _generateWithImage(String prompt, List<int> imageBytes) async {
+    // Prefer the existing GeminiProvider that AIService already wired up —
+    // it shares the same API key, quota bucket, and fallback chain.
+    final gemini = _ai.lookupGeminiProvider();
+
+    if (gemini != null) {
+      final Uint8List bytes = imageBytes is Uint8List
+          ? imageBytes as Uint8List
+          : Uint8List.fromList(imageBytes);
+      final result = await gemini.generateMultimodal(prompt, bytes, 'image/jpeg');
+      if (result.isNotEmpty) return result;
+    }
+
+    // Fallback: construct a one-off GenerativeModel from the same secret.
+    // This path is dev-only (kReleaseMode is already blocked at the entry
+    // of smartEnrichProduct).
+    final apiKey = _resolveGeminiApiKey();
+    if (apiKey.isEmpty) {
+      throw StateError(
+        'No Gemini API key available for multimodal enrichment. '
+        'Set GEMINI_API_KEY in .env (dev) or route via the backend '
+        'analyzePrescription callable (production).',
+      );
+    }
+    final model = GenerativeModel(model: 'gemini-1.5-flash', apiKey: apiKey);
+    final content = [
+      Content.multi([
+        TextPart(prompt),
+        DataPart('image/jpeg', Uint8List.fromList(imageBytes)),
+      ])
+    ];
+    final response = await model.generateContent(content);
+    return response.text ?? '';
+  }
+
+  /// Resolves a Gemini API key from the SecretsService. Dev-only — the
+  /// kReleaseMode guard at smartEnrichProduct's entry already prevents
+  /// this from running in shipped binaries.
+  String _resolveGeminiApiKey() {
+    try {
+      final secrets = getIt<SecretsService>();
+      final keys = <String>[
+        ...secrets.getKeysByPrefix('GEMINI_MASTER_KEY'),
+        ...secrets.getKeysByPrefix('GEMINI_SUPPORT_KEY'),
+        ...secrets.getKeysByPrefix('GEMINI_API_KEY'),
+      ].where((k) => k.isNotEmpty).toList();
+      return keys.isNotEmpty ? keys.first : '';
+    } catch (_) {
+      return '';
     }
   }
 

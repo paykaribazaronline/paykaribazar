@@ -1,0 +1,106 @@
+name: 🧫 Firebase Emulator — Full E2E
+
+# Manual-dispatch workflow that boots the FULL Firebase emulator suite
+# (Firestore + Functions + Auth + Storage) and runs the Flutter integration
+# test suite against it.  Useful for pre-release verification.
+#
+# This workflow is intentionally not triggered on every push — it's slow
+# (~30 min) and intended to be the final sanity check before a release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_path:
+        description: 'Integration test path or file (default: integration_test/)'
+        required: false
+        default: 'integration_test/'
+      only:
+        description: 'Comma-separated emulator list (default: firestore,functions,auth,storage)'
+        required: false
+        default: 'firestore,functions,auth,storage'
+  schedule:
+    # Nightly 2 AM UTC full E2E sweep
+    - cron: '0 2 * * *'
+
+concurrency:
+  group: firebase-emulator-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+  JAVA_VERSION: '17'
+  FLUTTER_VERSION: '3.27.0'
+
+jobs:
+  emulator-e2e:
+    name: 🧫 E2E on emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      - name: Install functions dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Build functions
+        working-directory: functions
+        run: npm run build
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@latest
+
+      - name: Create dummy Firebase options
+        run: bash .github/scripts/create_dummy_firebase_options.sh
+
+      - name: Verify integration_test/ exists
+        run: |
+          if [ ! -d integration_test ]; then
+            echo "::error::integration_test/ directory is missing — cannot run E2E."
+            exit 1
+          fi
+          echo "✅ integration_test/ found"
+
+      - name: Run Flutter integration tests against emulator (FATAL)
+        run: |
+          echo "🧫 Booting emulator with: ${{ github.event.inputs.only || 'firestore,functions,auth,storage' }}"
+          firebase emulators:exec \
+            --only ${{ github.event.inputs.only || 'firestore,functions,auth,storage' }} \
+            "flutter test ${{ github.event.inputs.test_path || 'integration_test/' }} --reporter expanded"
+        env:
+          FIREBASE_EMULATOR_HUB: 'localhost:4400'
+
+      - name: Upload emulator logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-e2e-logs
+          path: |
+            *-debug.log
+            .dart_tool/test_results/
+          if-no-files-found: ignore
+          retention-days: 14

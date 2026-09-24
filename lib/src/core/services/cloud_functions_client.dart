@@ -1,0 +1,431 @@
+// ignore_for_file: deprecated_member_use_from_same_package
+
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
+
+import '../../features/checkout/models/pricing_snapshot.dart';
+import '../../features/inventory/models/reservation_model.dart';
+import '../../features/payments/models/payment_init.dart';
+import '../../features/payments/models/payment_method.dart';
+import '../../features/payments/models/payment_result.dart';
+
+/// Region must match the backend deploy region (see `functions/src/index.ts`).
+const String _kFunctionsRegion = 'asia-southeast1';
+
+/// ---------------------------------------------------------------------------
+/// Typed exceptions. `FirebaseFunctionsException` is mapped to one of these
+/// so the UI layer can render a Bangla message instead of leaking the raw
+/// English `details` payload.
+/// ---------------------------------------------------------------------------
+
+class PaykariCloudFunctionException implements Exception {
+  final String code;
+  final String message;
+  final String banglaMessage;
+  final Object? details;
+  const PaykariCloudFunctionException(
+    this.code,
+    this.message, {
+    this.banglaMessage = 'কিছু সমস্যা হয়েছে। আবার চেষ্টা করুন।',
+    this.details,
+  });
+
+  @override
+  String toString() => 'PaykariCloudFunctionException($code): $message';
+}
+
+class InsufficientStockException extends PaykariCloudFunctionException {
+  final String? productId;
+  final int? available;
+  final int? wanted;
+  InsufficientStockException(String message,
+      {this.productId, this.available, this.wanted, String? bangla})
+      : super('insufficient-stock', message,
+            banglaMessage: bangla ?? 'পর্যাপ্ত পণ্য নেই। কিছুক্ষণ পর আবার চেষ্টা করুন।');
+}
+
+class PricingExpiredException extends PaykariCloudFunctionException {
+  PricingExpiredException(String message)
+      : super('pricing-expired', message,
+            banglaMessage: 'দাম পরিবর্তন হয়েছে। আবার চেষ্টা করুন।');
+}
+
+class PricingSignatureInvalidException extends PaykariCloudFunctionException {
+  PricingSignatureInvalidException(String message)
+      : super('pricing-signature-invalid', message,
+            banglaMessage: 'অর্ডারটি পরিবর্তিত হয়েছে। আবার যাচাই করুন।');
+}
+
+class PaymentDeclinedException extends PaykariCloudFunctionException {
+  PaymentDeclinedException(String message, {String? bangla})
+      : super('payment-declined', message,
+            banglaMessage: bangla ?? 'পেমেন্ট ব্যর্থ হয়েছে।');
+}
+
+class PermissionDeniedException extends PaykariCloudFunctionException {
+  PermissionDeniedException(String message, {String? bangla})
+      : super('permission-denied', message,
+            banglaMessage: bangla ?? 'এই কাজের অনুমতি নেই।');
+}
+
+class NotFoundException extends PaykariCloudFunctionException {
+  NotFoundException(String message, {String? bangla})
+      : super('not-found', message,
+            banglaMessage: bangla ?? 'তথ্য পাওয়া যায়নি।');
+}
+
+class InvalidArgumentException extends PaykariCloudFunctionException {
+  InvalidArgumentException(String message, {String? bangla})
+      : super('invalid-argument', message,
+            banglaMessage: bangla ?? 'ভুল তথ্য দেওয়া হয়েছে।');
+}
+
+class FailedPreconditionException extends PaykariCloudFunctionException {
+  FailedPreconditionException(String message, {String? bangla})
+      : super('failed-precondition', message,
+            banglaMessage: bangla ?? 'এই মুহূর্তে এই কাজটি সম্ভব নয়।');
+}
+
+class CloudFunctionUnavailableException extends PaykariCloudFunctionException {
+  CloudFunctionUnavailableException(String message)
+      : super('unavailable', message,
+            banglaMessage: 'সার্ভারে সাময়িক সমস্যা। কিছুক্ষণ পর আবার চেষ্টা করুন।');
+}
+
+/// ---------------------------------------------------------------------------
+/// Result models used by the wrapper. (Some are re-exported from features/.)
+/// ---------------------------------------------------------------------------
+
+class ReservationResult {
+  final String reservationId;
+  final DateTime expiresAt;
+  const ReservationResult({required this.reservationId, required this.expiresAt});
+
+  factory ReservationResult.fromJson(Map<String, dynamic> json) {
+    return ReservationResult(
+      reservationId: json['reservationId'] as String,
+      expiresAt: DateTime.fromMillisecondsSinceEpoch(
+        (json['expiresAt'] as num).toInt(),
+      ),
+    );
+  }
+}
+
+class BankPaymentRequest {
+  final String paymentId;
+  final String status;
+  final List<Map<String, dynamic>> banks;
+  final int amountExpectedPoisha;
+  const BankPaymentRequest({
+    required this.paymentId,
+    required this.status,
+    required this.banks,
+    required this.amountExpectedPoisha,
+  });
+
+  factory BankPaymentRequest.fromJson(Map<String, dynamic> json) {
+    return BankPaymentRequest(
+      paymentId: json['paymentId'] as String,
+      status: json['status'] as String,
+      banks: (json['banks'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
+          const [],
+      amountExpectedPoisha: ((json['amountExpected'] ?? 0) as num).round() * 100,
+    );
+  }
+}
+
+/// ---------------------------------------------------------------------------
+/// CloudFunctionsClient — a typed singleton around FirebaseFunctions.instance.
+/// Every callable in the backend has a corresponding method here. GetIt is
+/// the source of truth for the instance; register via
+/// `getIt.registerSingleton<CloudFunctionsClient>(CloudFunctionsClient())`.
+/// ---------------------------------------------------------------------------
+
+class CloudFunctionsClient {
+  CloudFunctionsClient({FirebaseFunctions? functions})
+      : _functions = functions ?? FirebaseFunctions.instance;
+
+  final FirebaseFunctions _functions;
+
+  /// Returns a callable bound to the backend region.
+  HttpsCallable _c(String name) =>
+      _functions.httpsCallable(name, region: _kFunctionsRegion);
+
+  // ------------------------------- pricing ---------------------------------
+
+  Future<PricingSnapshot> calcOrder({
+    required List<Map<String, dynamic>> items,
+    String? addressId,
+    String? couponCode,
+    String? businessId,
+  }) async {
+    final res = await _call('calcOrder', <String, dynamic>{
+      'items': items,
+      if (addressId != null) 'addressId': addressId,
+      if (couponCode != null) 'couponCode': couponCode,
+      if (businessId != null) 'businessId': businessId,
+    });
+    return PricingSnapshot.fromCalcOrderResponse(res.data as Map<String, dynamic>);
+  }
+
+  // ------------------------------- inventory -------------------------------
+
+  Future<ReservationResult> reserveStock(PricingSnapshot snap) async {
+    final res = await _call('reserveStock', <String, dynamic>{
+      'snapshot': snap.toJson(),
+      'signature': snap.signature,
+    });
+    return ReservationResult.fromJson(
+      Map<String, dynamic>.from(res.data as Map),
+    );
+  }
+
+  Future<void> releaseReservation(
+    String reservationId, {
+    String reason = 'user_cancelled',
+  }) async {
+    await _call('releaseReservation', <String, dynamic>{
+      'reservationId': reservationId,
+      'reason': reason,
+    });
+  }
+
+  // ------------------------------- orders ----------------------------------
+
+  Future<String> createOrder({
+    required PricingSnapshot snap,
+    required String reservationId,
+    String? addressId,
+    required PaymentMethod paymentMethod,
+    String? note,
+  }) async {
+    final res = await _call('createOrder', <String, dynamic>{
+      'snapshot': snap.toJson(),
+      'signature': snap.signature,
+      'reservationId': reservationId,
+      if (addressId != null) 'addressId': addressId,
+      'paymentMethod': paymentMethod.wireName,
+      if (note != null) 'note': note,
+    });
+    return (res.data as Map<String, dynamic>)['orderId'] as String;
+  }
+
+  Future<void> cancelOrder(String orderId, {required String reason}) async {
+    await _call('cancelOrder', <String, dynamic>{
+      'orderId': orderId,
+      'reason': reason,
+    });
+  }
+
+  // ------------------------------- payments --------------------------------
+
+  Future<PaymentInit> bkashCreatePayment({
+    required String orderId,
+    int? amountPoisha,
+  }) async {
+    final res = await _call('bkashCreatePayment', <String, dynamic>{
+      'orderId': orderId,
+      if (amountPoisha != null) 'amountPoisha': amountPoisha,
+    });
+    return PaymentInit.fromJson(
+      Map<String, dynamic>.from(res.data as Map),
+      provider: PaymentProvider.bkash,
+    );
+  }
+
+  Future<PaymentInit> nagadCreatePayment({required String orderId}) async {
+    final res = await _call('nagadCreatePayment', <String, dynamic>{
+      'orderId': orderId,
+    });
+    return PaymentInit.fromJson(
+      Map<String, dynamic>.from(res.data as Map),
+      provider: PaymentProvider.nagad,
+    );
+  }
+
+  Future<PaymentInit> sslczCreatePayment({
+    required String orderId,
+    String? successUrl,
+    String? failUrl,
+    String? cancelUrl,
+  }) async {
+    final res = await _call('sslczCreatePayment', <String, dynamic>{
+      'orderId': orderId,
+      if (successUrl != null) 'successUrl': successUrl,
+      if (failUrl != null) 'failUrl': failUrl,
+      if (cancelUrl != null) 'cancelUrl': cancelUrl,
+    });
+    return PaymentInit.fromJson(
+      Map<String, dynamic>.from(res.data as Map),
+      provider: PaymentProvider.sslcommerz,
+    );
+  }
+
+  Future<BankPaymentRequest> recordBankPaymentRequest({
+    required String orderId,
+    required String slipUrl,
+    double? amountPaid,
+    String? transferDate,
+    String? senderAccount,
+    String? note,
+  }) async {
+    final res = await _call('recordBankPaymentRequest', <String, dynamic>{
+      'orderId': orderId,
+      'slipUrl': slipUrl,
+      if (amountPaid != null) 'amountPaid': amountPaid,
+      if (transferDate != null) 'transferDate': transferDate,
+      if (senderAccount != null) 'senderAccount': senderAccount,
+      if (note != null) 'note': note,
+    });
+    return BankPaymentRequest.fromJson(
+      Map<String, dynamic>.from(res.data as Map),
+    );
+  }
+
+  Future<PaymentVerifyResult> verifyPayment({
+    required PaymentProvider provider,
+    required String paymentRefId,
+    required String orderId,
+  }) async {
+    final res = await _call('verifyPayment', <String, dynamic>{
+      'provider': provider.wireName,
+      'paymentRefId': paymentRefId,
+      'orderId': orderId,
+    });
+    return PaymentVerifyResult.fromJson(
+      Map<String, dynamic>.from(res.data as Map),
+      provider: provider,
+    );
+  }
+
+  Future<void> refundPayment({
+    required String paymentId,
+    int? amountPoisha,
+    String? reason,
+  }) async {
+    await _call('refundPayment', <String, dynamic>{
+      'paymentId': paymentId,
+      if (amountPoisha != null) 'amountPoisha': amountPoisha,
+      if (reason != null) 'reason': reason,
+    });
+  }
+
+  // ------------------------------- search ----------------------------------
+
+  Future<List<Map<String, dynamic>>> searchProducts(
+    String query, {
+    int limit = 50,
+    String? category,
+    String? brand,
+    int? minStock,
+  }) async {
+    final res = await _call('searchProducts', <String, dynamic>{
+      'query': query,
+      'limit': limit,
+      if (category != null) 'category': category,
+      if (brand != null) 'brand': brand,
+      if (minStock != null) 'minStock': minStock,
+    });
+    final data = res.data as Map<String, dynamic>;
+    final hits = data['hits'] as List<dynamic>? ?? const [];
+    return hits.map((h) => Map<String, dynamic>.from(h as Map)).toList();
+  }
+
+  // ------------------------------- coupon ----------------------------------
+
+  Future<Map<String, dynamic>> redeemCoupon({
+    required String couponCode,
+    required String orderId,
+  }) async {
+    final res = await _call('redeemCoupon', <String, dynamic>{
+      'couponCode': couponCode,
+      'orderId': orderId,
+    });
+    return Map<String, dynamic>.from(res.data as Map);
+  }
+
+  // ------------------------------- helpers ---------------------------------
+
+  Future<HttpsCallableResult> _call(String name, Map<String, dynamic> args) async {
+    try {
+      final result = await _c(name).call(args);
+      return result;
+    } on FirebaseFunctionsException catch (e) {
+      throw _mapException(e);
+    } catch (e) {
+      // Network down, host unreachable, App Check failed, etc.
+      if (kDebugMode) debugPrint('[CloudFunctionsClient] $name failed: $e');
+      throw CloudFunctionUnavailableException(
+        'Network error calling $name: $e',
+      );
+    }
+  }
+
+  PaykariCloudFunctionException _mapException(FirebaseFunctionsException e) {
+    final msg = e.message ?? '';
+    final details = e.details;
+    switch (e.code) {
+      case 'invalid-argument':
+        return InvalidArgumentException(msg, details: details);
+      case 'failed-precondition':
+        // Detect stock / pricing-expired / signature sub-cases by message
+        // content. The backend throws `failed-precondition` for all three
+        // (see functions/src/shared/security.ts and reserveStock.ts).
+        if (msg.contains('Insufficient stock') || msg.contains('stock')) {
+          final productId = _extractProductId(details);
+          return InsufficientStockException(msg, productId: productId);
+        }
+        if (msg.contains('expired') || msg.contains('Pricing snapshot has expired')) {
+          return PricingExpiredException(msg);
+        }
+        if (msg.contains('signature') || msg.contains('tampered')) {
+          return PricingSignatureInvalidException(msg);
+        }
+        if (msg.contains('Order does not belong to you') ||
+            msg.contains('Reservation does not belong')) {
+          return PermissionDeniedException(msg);
+        }
+        return FailedPreconditionException(msg, details: details);
+      case 'not-found':
+        return NotFoundException(msg, details: details);
+      case 'permission-denied':
+        return PermissionDeniedException(msg, details: details);
+      case 'out-of-range':
+        return InvalidArgumentException(msg, details: details);
+      case 'unauthenticated':
+        return PermissionDeniedException(msg,
+            bangla: 'অনুগ্রহ করে আবার লগইন করুন।');
+      case 'unavailable':
+      case 'deadline-exceeded':
+        return CloudFunctionUnavailableException(msg);
+      case 'internal':
+        return CloudFunctionUnavailableException(msg);
+      default:
+        return PaykariCloudFunctionException(e.code, msg, details: details);
+    }
+  }
+
+  String? _extractProductId(Object? details) {
+    if (details is Map) {
+      final v = details['productId'];
+      if (v is String) return v;
+    }
+    return null;
+  }
+}
+
+/// Convenience global accessor — populated by `service_initializer.dart`.
+/// Until that wiring lands, callers can construct `CloudFunctionsClient()`
+/// directly.
+CloudFunctionsClient? _cloudFunctionsClientSingleton;
+set cloudFunctionsClientSingleton(CloudFunctionsClient? v) =>
+    _cloudFunctionsClientSingleton = v;
+CloudFunctionsClient get cloudFunctionsClient {
+  final v = _cloudFunctionsClientSingleton;
+  if (v != null) return v;
+  // Lazy-init so unit tests and the existing app build still work before the
+  // service_initializer wiring is updated.
+  final fresh = CloudFunctionsClient();
+  _cloudFunctionsClientSingleton = fresh;
+  return fresh;
+}

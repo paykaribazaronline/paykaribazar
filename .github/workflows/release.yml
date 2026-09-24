@@ -11,18 +11,154 @@ on:
         description: 'Release version (e.g., v1.0.0)'
         required: true
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# OIDC for Workload Identity Federation on downstream Play / GCS uploads.
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
-  pre-release:
-    name: ✅ Pre-Release Checks
+  # ─────────────────────────────────────────────────────────────────────────
+  # Pre-release gates — must ALL be green before any release artifact is built.
+  # ─────────────────────────────────────────────────────────────────────────
+  rules-test:
+    name: 🛡️ Firestore/Storage Rules Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Java (emulator)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@latest
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.0'
+          cache: true
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      - name: Create dummy Firebase options
+        run: bash .github/scripts/create_dummy_firebase_options.sh
+
+      - name: Run Firestore/Storage rules tests (FATAL)
+        run: |
+          firebase emulators:exec --only firestore,storage \
+            "dart test test/firestore_rules/"
+        env:
+          FIREBASE_CLI_PREVIEWS: storageEmulator
+
+  functions-test:
+    name: ☁️ Cloud Functions Lint + Typecheck + Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Lint (eslint)
+        working-directory: functions
+        run: npm run lint
+
+      - name: Typecheck (tsc --noEmit)
+        working-directory: functions
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: functions
+        run: npm run build
+
+      - name: Unit tests
+        working-directory: functions
+        run: npm test --if-present
+
+  secret-scan:
+    name: 🔑 Secret Scan (TruffleHog + Gitleaks + Forbidden Patterns)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: 'true'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+
+      - name: Forbidden placeholder secret patterns
+        run: |
+          set -e
+          PATTERNS=(
+            'paykari_bazar_api_key'
+            'paykari_bazar_api_secret_key_1234567890'
+            'MySecureAES256KeyFor32BytLength!'
+            '0123456789\.0123456789\.0123456789'
+          )
+          FOUND=0
+          for p in "${PATTERNS[@]}"; do
+            if rg -n --no-binary "$p" --glob '!**/*.lock' --glob '!.git/**' . ; then
+              echo "::error::Forbidden secret pattern matched: $p"
+              FOUND=1
+            fi
+          done
+          [ "$FOUND" == "1" ] && exit 1
+          echo "✅ No forbidden placeholder secrets."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Pre-release checks (analyze, test, keystore sanity)
+  # ─────────────────────────────────────────────────────────────────────────
+  pre-release:
+    name: ✅ Pre-Release Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [rules-test, functions-test, secret-scan]
+
+    steps:
+      - uses: actions/checkout@v4
 
       - name: 🦋 Setup Flutter
         uses: subosito/flutter-action@v2
@@ -39,12 +175,30 @@ jobs:
       - name: 🔧 Generate code
         run: dart run build_runner build --delete-conflicting-outputs
 
-      - name: 🔍 Verify no compilation errors
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: 🔍 Verify no compilation errors (FATAL)
+        run: flutter analyze --fatal-infos --fatal-warnings
 
-      - name: 🧪 Run tests
+      - name: 🧪 Run tests (FATAL)
         run: flutter test --coverage
 
+      # Reject production release if keystore.properties is missing or if
+      # the repo would be forced to fall back to a debug-signed build.
+      - name: 🔐 Verify production keystore is present
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+        run: |
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "::error::Production release tag pushed but secrets.KEYSTORE_BASE64 is empty. Refusing to release unsigned APK."
+            exit 1
+          fi
+          if [ -z "${{ secrets.KEYSTORE_PROPERTIES_B64 }}" ]; then
+            echo "::error::Production release tag pushed but secrets.KEYSTORE_PROPERTIES_B64 is empty. Refusing to release without keystore.properties."
+            exit 1
+          fi
+          echo "✅ Production keystore + properties are configured."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build the actual release APKs (only after every gate has passed)
+  # ─────────────────────────────────────────────────────────────────────────
   build-release:
     name: 🏗️ Build Release APKs (Customer & Admin)
     runs-on: ubuntu-latest
@@ -52,7 +206,7 @@ jobs:
     needs: pre-release
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
 
       - name: ☕ Setup Java
         uses: actions/setup-java@v4
@@ -72,6 +226,17 @@ jobs:
           flutter pub get
           bash .github/scripts/create_dummy_firebase_options.sh
           dart run build_runner build --delete-conflicting-outputs
+
+      - name: 🔐 Restore keystore.properties (production)
+        run: |
+          mkdir -p android/app
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
+          echo "${{ secrets.KEYSTORE_PROPERTIES_B64 }}" | base64 -d > android/keystore.properties
+          if [ ! -f android/keystore.properties ]; then
+            echo "::error::keystore.properties could not be restored from secrets.KEYSTORE_PROPERTIES_B64"
+            exit 1
+          fi
+          echo "✅ keystore.properties restored"
 
       - name: 🛍️ Build Customer APK
         run: |
@@ -115,13 +280,13 @@ jobs:
         id: release_notes
         run: |
           PREVIOUS_TAG=$(git tag --sort=-version:refname --list 'v*.*.*' | sed -n '2p')
-          
+
           if [ -z "$PREVIOUS_TAG" ]; then
             RELEASE_NOTES=$(git log --pretty=format:"%h - %s" | head -20)
           else
             RELEASE_NOTES=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"%h - %s")
           fi
-          
+
           echo "RELEASE_BODY<<EOF" >> $GITHUB_ENV
           echo "## 🚀 Release: ${{ github.ref_name }}" >> $GITHUB_ENV
           echo "" >> $GITHUB_ENV
@@ -155,7 +320,7 @@ jobs:
           body: ${{ env.RELEASE_BODY }}
           draft: false
           prerelease: false
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -173,7 +338,7 @@ jobs:
       SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_AUTH_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -208,7 +373,7 @@ jobs:
     needs: pre-release
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -253,7 +418,15 @@ jobs:
     if: false
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
+
+      # OIDC auth — Workload Identity Federation for Play uploads (no key file)
+      - name: Auth to Google Cloud (OIDC)
+        id: gcp_auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_PLAY_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_PLAY_SERVICE_ACCOUNT }}
 
       - name: Download release builds
         uses: actions/download-artifact@v3
@@ -298,7 +471,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
 
       - name: Download artifacts
         uses: actions/download-artifact@v3
@@ -348,7 +521,7 @@ jobs:
   slack-notification:
     name: Notify Slack
     runs-on: ubuntu-latest
-    needs: [pre-release, build-release, deploy-shorebird, deploy-firebase]
+    needs: [rules-test, functions-test, secret-scan, pre-release, build-release, deploy-shorebird, deploy-firebase]
     if: always()
 
     steps:

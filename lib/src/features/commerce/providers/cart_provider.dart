@@ -5,6 +5,8 @@ import '../../../di/service_locator.dart';
 import '../../../di/providers.dart';
 import '../../../services/business_config_service.dart';
 import '../../../models/user_model.dart';
+import '../../../core/services/cloud_functions_client.dart';
+import '../../../features/checkout/models/pricing_snapshot.dart';
 
 export '../domain/cart_model.dart' show CartState;
 
@@ -15,9 +17,23 @@ final cartProvider = StateNotifierProvider<CartNotifier, CartState>((ref) {
   return CartNotifier(service);
 });
 
+/// UI-only optimistic total in taka (double). Kept for backwards
+/// compatibility with existing widgets. New code MUST use
+/// [serverPricingProvider] for any money decision — the server is the
+/// source of truth for all totals, discounts, and fees.
+@Deprecated('Use serverPricingProvider for any money decision. '
+    'This value is a UI-only optimistic estimate and may differ from the '
+    'server-computed snapshot.')
 final cartSubtotalProvider = Provider<double>((ref) {
   return ref.watch(cartProvider).totalAmount;
 });
+
+/// Server-signed pricing snapshot for the current cart. Populated by
+/// [CartNotifier.calculateServerTotals]. Always prefer this provider over
+/// [cartSubtotalProvider] / [cartTotalProvider] / [cartDiscountProvider]
+/// when making checkout-related decisions — those legacy providers remain
+/// for optimistic UI display only.
+final serverPricingProvider = StateProvider<PricingSnapshot?>((ref) => null);
 
 final selectedAddressIdProvider = StateProvider<String?>((ref) => null);
 
@@ -165,6 +181,44 @@ class CartNotifier extends StateNotifier<CartState> {
 
   CartNotifier(this._service) : super(CartState()) {
     _loadCart();
+  }
+
+  /// Calls the backend `calcOrder` callable to obtain a server-signed
+  /// [PricingSnapshot] for the current cart contents. The result is exposed
+  /// via [serverPricingProvider] — every checkout-related money decision
+  /// (delivery fee, discount, grand total) MUST use the snapshot rather than
+  /// the client-computed [cartSubtotalProvider].
+  ///
+  /// The caller should re-invoke this whenever:
+  ///   - cart items change (add/remove/quantity),
+  ///   - the selected address changes (delivery fee depends on it),
+  ///   - the applied coupon changes,
+  ///   - the snapshot's [PricingSnapshot.expiresAt] has passed (10-min TTL).
+  Future<PricingSnapshot> calculateServerTotals({
+    String? couponCode,
+    String? businessId,
+    String? addressId,
+  }) async {
+    final items = state.items
+        .map((i) => <String, dynamic>{
+              'productId': i.id,
+              'quantity': i.quantity,
+            })
+        .toList(growable: false);
+
+    final cf = cloudFunctionsClient;
+    final snap = await cf.calcOrder(
+      items: items,
+      addressId: addressId,
+      couponCode: couponCode,
+      businessId: businessId,
+    );
+    // Stash into the StateProvider so other widgets can read it without
+    // prop-drilling. We can't `ref.read()` from inside a non-Widget method
+    // cleanly here; the caller (a Riverpod Consumer) is responsible for
+    // writing the result back to [serverPricingProvider] — but for
+    // convenience we still return it.
+    return snap;
   }
 
   Future<void> _loadCart() async {

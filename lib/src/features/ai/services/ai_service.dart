@@ -246,8 +246,9 @@ class AIService {
   }
 
   Future<Map<String, dynamic>> performGlobalSystemCheck() async {
+    final stopwatch = Stopwatch()..start();
     final providerStats = _providerManager.getStats();
-    
+
     // Check health of all providers in parallel with a timeout to identify actually active keys
     final healthChecks = await Future.wait(
       _providers.map((p) => p.healthCheck().timeout(
@@ -257,13 +258,16 @@ class AIService {
     );
     final activeCount = healthChecks.where((status) => status == true).length;
 
+    stopwatch.stop();
+    final latencyMs = '${stopwatch.elapsedMilliseconds}ms';
+
     return {
       'status': activeCount > 0 ? 'healthy' : 'offline',
       'providers_active': activeCount,
       'primary_available': providerStats['primaryAvailable'],
       'using_fallback': providerStats['usingFallback'],
       'active_provider': providerStats['activeProvider'],
-      'latency': '45ms'
+      'latency': latencyMs,
     };
   }
 
@@ -416,4 +420,15 @@ class AIService {
   Map<String, dynamic> getProviderStatus() {
     return _providerManager.getStats();
   }
+
+  /// Public accessor for the first registered Gemini provider. Used by
+  /// `AiAutomationService.smartEnrichProduct` to perform multimodal (image +
+  /// text) generation without exposing the private `_providers` list. Returns
+  /// `null` when no Gemini key is configured.
+  ///
+  /// This is dev-only — production AI must run via the backend
+  /// `analyzePrescription`-style callable so the Gemini API key never ships
+  /// in the client binary.
+  GeminiProvider? lookupGeminiProvider() =>
+      _providers.whereType<GeminiProvider>().firstOrNull;
 }

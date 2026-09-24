@@ -5,71 +5,201 @@ service cloud.firestore {
     // ==================== HELPERS ====================
     function isAuth() { return request.auth != null; }
     function isOwner(userId) { return isAuth() && request.auth.uid == userId; }
-    
+
+    // Admin check prefers the custom-claim `admin == true` set by the
+    // `setUserRole` / `provisionStaff` Cloud Functions. We deliberately do NOT
+    // fall back to a Firestore `admins/{uid}` lookup because that would let any
+    // caller influence their own role by writing a doc — the claim is the only
+    // source of truth. The `users/{uid}.role == 'admin'` mirror is allowed only
+    // as a defensive secondary signal; writes to `users/{uid}.role` are
+    // blocked by the rule on the `users` collection below.
     function isAdmin() {
       return isAuth() &&
         (request.auth.token.admin == true ||
-         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
     }
 
+    // Staff = admin or staff role. The `role` custom claim is the primary
+    // signal; the Firestore mirror is consulted defensively.
     function isStaff() {
       return isAuth() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'staff'];
+        (request.auth.token.role in ['admin', 'staff'] ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'staff']);
     }
 
     function isReseller() {
       return isAuth() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'reseller';
+        (request.auth.token.role == 'reseller' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'reseller');
     }
 
-    function isValidPhone(phone) { return phone.matches('^01[3-9][0-9]{8}$'); }
-
-    // Rate limiting helper
-    function isNotRateLimited(userId) {
-      return !exists(/databases/$(database)/documents/rateLimits/$(userId)) || 
-             request.time > get(/databases/$(database)/documents/rateLimits/$(userId)).data.lastRequest + duration.value(1, "s");
+    function isRider() {
+      return isAuth() &&
+        (request.auth.token.role == 'rider' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'rider');
     }
 
-    // ==================== USERS & WISHLIST ====================
+    // ==================== USERS ====================
+    // Privacy: a user's profile is NOT readable by every authenticated user.
+    // Only the owner and staff can read it.
     match /users/{userId} {
-      allow read: if isAuth();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isBanned']);
-      
+      allow read: if isOwner(userId) || isStaff();
+      // Self-signup: a user may create only their own profile doc with default
+      // role. They cannot set `role`, `points`, `walletBalance`, etc. — those
+      // are server-only fields populated by `onUserCreate` and admin callables.
+      allow create: if isOwner(userId) &&
+        (request.resource.data.role == null || request.resource.data.role == 'customer') &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+          ['isBanned', 'points', 'walletBalance', 'storageLimit']
+        );
+      // Self-update is allowed for harmless profile fields only. The
+      // money/role/ban ledger fields are NEVER writable by the client.
+      // Staff may update operational fields — but never their own role/ban
+      // (privilege escalation guard).
+      allow update: if (isOwner(userId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+            ['role', 'isBanned', 'points', 'walletBalance', 'storageLimit']
+          )) ||
+        (isStaff() &&
+          request.auth.uid != userId &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+            ['role']
+          ));
+
+      // Wishlist (per-user product saves)
       match /wishlist/{productId} {
         allow read, write: if isOwner(userId);
       }
-      
-      match /transactions/{transactionId} {
+
+      // Addresses (per-user shipping address book)
+      match /addresses/{addressId} {
         allow read, write: if isOwner(userId);
+      }
+
+      // WALLET & LOYALTY LEDGER — SERVER ONLY.
+      // Wallet balance, points, and every transaction row are mutated
+      // exclusively by Cloud Functions using the Admin SDK (which bypasses
+      // these rules). A client must NEVER append, edit, or delete a ledger
+      // entry — doing so would let a user mint money or points for themselves.
+      // The `createOrder`, payment webhooks, `refundPayment`, and
+      // `redeemCoupon` callables are the only legitimate writers.
+      match /transactions/{txId} {
+        allow read: if isOwner(userId);
+        allow create, update, delete: if false;
       }
     }
 
     // ==================== ORDERS ====================
+    // Orders are created server-side via the `createOrder` callable. Direct
+    // client writes are forbidden — otherwise a client could supply their own
+    // `totalAmount`, `items`, or `discount` and bypass pricing verification.
     match /orders/{orderId} {
-      allow read: if isAuth() && (resource.data.customerUid == request.auth.uid || resource.data.resellerUid == request.auth.uid || isStaff());
+      allow read: if isAuth() && (
+        resource.data.customerUid == request.auth.uid ||
+        resource.data.resellerUid == request.auth.uid ||
+        isStaff() ||
+        isRider()
+      );
 
-      // DNA ENFORCED: Strict field validation for orders (Point #1 from Audit)
-      // বাংলা: অর্ডার ডাটার নিখুঁত যাচাইকরণ নিশ্চিত করা হয়েছে
-      allow create: if isAuth() &&
-                    request.resource.data.customerUid == request.auth.uid &&
-                    request.resource.data.totalAmount >= 0 &&
-                    request.resource.data.items is list &&
-                    request.resource.data.status == 'Pending';
+      // Forbidden — use the `createOrder` callable Cloud Function.
+      allow create: if false;
 
-      allow update: if isStaff() || (isOwner(resource.data.customerUid) && request.resource.data.status == 'cancelled');
+      // Staff may update status (fulfilment flow). A customer may cancel
+      // their own order (`status == 'cancelled'`) but cannot touch any
+      // other field — no totals, no items, no payment fields.
+      allow update: if isStaff() ||
+        (isOwner(resource.data.customerUid) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+         request.resource.data.status == 'cancelled');
+
+      // Hard delete is admin-only. (Soft-cancel via update above is the
+      // normal flow; delete is for backoffice cleanup.)
+      allow delete: if isAdmin();
     }
 
     // ==================== PRODUCTS (DNA PATH) ====================
     match /hub/data/products/{productId} {
       allow read: if true;
-      allow write: if isAdmin() || isReseller();
-      
+      // Admin may write anything (incl. stock). Resellers may write product
+      // metadata (name, images, description, price tiers) but NEVER the
+      // inventory ledger fields — those are mutated only by `reserveStock` /
+      // `commitReservation` / `releaseReservation` via Admin SDK.
+      allow write: if isAdmin() ||
+        (isReseller() &&
+         !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+           ['stock', 'reservedStock', 'soldStock', 'wholesalePrice', 'tieredPrices']
+         ));
+
       match /reviews/{reviewId} {
         allow read: if true;
         allow create: if isAuth();
+        // Review authors may edit/delete their own review; admins may delete.
+        allow update, delete: if isOwner(resource.data.userId) || isAdmin();
       }
+    }
+
+    // ==================== PRODUCT PRICES (server-only writes) ====================
+    match /hub/data/productPrices/{productId} {
+      allow read: if true;
+      // Written exclusively by the pricing pipeline / admin callables.
+      allow write: if isAdmin();
+    }
+
+    // ==================== INVENTORY RESERVATIONS (server-only) ====================
+    // `inventoryReservations/{id}` is mutated by the `reserveStock`,
+    // `releaseReservation`, and `commitReservation` Cloud Functions. The
+    // reserved/committed lifecycle is the atomic inventory guard — clients
+    // must never touch these docs directly.
+    match /inventoryReservations/{reservationId} {
+      allow read: if isOwner(resource.data.userId) || isStaff();
+      allow write: if false;
+    }
+
+    // ==================== PAYMENTS (server-only) ====================
+    // `payments/{id}` is written by the payment callables and the verified
+    // HTTPS webhooks (bKash / Nagad / SSLCommerz / Bank). Bank-slip image
+    // uploads are NOT stored here — they go to the `paymentslips/` Storage
+    // bucket; the Firestore doc only references the URL, set by a callable.
+    match /payments/{paymentId} {
+      allow read: if isOwner(resource.data.userId) || isStaff();
+      allow create, update, delete: if false;
+    }
+
+    // ==================== AUDIT LOGS ====================
+    // Callable contexts (which already passed `assertAuth` / `assertRole`)
+    // may append audit entries. Reads are admin-only; entries are immutable.
+    match /auditLogs/{logId} {
+      allow create: if isAuth();
+      allow read: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // ==================== COUPONS (settings subcollection) ====================
+    match /settings/coupons/{couponId} {
+      allow read: if true;
+      // Redemption state lives on the user doc and is mutated by the
+      // `redeemCoupon` callable; the coupon definition itself is admin-only.
+      allow write: if isAdmin();
+    }
+
+    // ==================== BUSINESSES ====================
+    match /businesses/{businessId} {
+      allow read: if isAuth();
+      allow create: if isOwner(request.resource.data.ownerUid);
+      allow update: if isOwner(resource.data.ownerUid) || isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // ==================== PRESCRIPTIONS (strict, isolated security domain) ====================
+    // Healthcare data is a distinct trust domain. The owner may upload a
+    // prescription (via the Storage bucket + a Firestore doc); after that
+    // only staff may mutate it (add analysis results), and only admins may
+    // delete. This matches the `analyzePrescription` callable flow.
+    match /prescriptions/{prescriptionId} {
+      allow read: if isOwner(resource.data.userId) || isStaff();
+      allow create: if isOwner(request.resource.data.userId);
+      allow update: if isStaff();
+      allow delete: if isAdmin();
     }
 
     // ==================== CATEGORIES (DNA PATH) ====================
@@ -85,9 +215,11 @@ service cloud.firestore {
     }
 
     // ==================== LOCATIONS (DNA PATH) ====================
+    // Bootstrap hole removed: only admins may write locations. Initial
+    // seeding is done by the `runSeed` admin callable, not by client apps.
     match /hub/data/locations/{locationId} {
       allow read: if true;
-      allow write: if isAdmin() || !exists(/databases/$(database)/documents/hub/data/locations/dhaka);
+      allow write: if isAdmin();
     }
 
     // ==================== EMERGENCY - BLOOD DONORS ====================
@@ -109,13 +241,14 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ==================== CHATS (Uses 'private_chats' collection) ====================
+    // ==================== CHATS (private_chats) ====================
     match /private_chats/{chatId} {
       allow read, write: if isAuth() && request.auth.uid in resource.data.participantIds;
-      
+
       match /messages/{msgId} {
         allow read: if isAuth() && request.auth.uid in get(/databases/$(database)/documents/private_chats/$(chatId)).data.participantIds;
         allow create: if isAuth() && request.auth.uid in get(/databases/$(database)/documents/private_chats/$(chatId)).data.participantIds;
+        allow update, delete: if isAuth() && request.auth.uid == resource.data.senderId;
       }
     }
 
@@ -130,25 +263,24 @@ service cloud.firestore {
     match /ai_audit_logs/{logId} {
       allow create: if isAuth();
       allow read: if isAdmin();
-      allow delete: if isAdmin();
+      allow update, delete: if false;
     }
 
     // ==================== COMMISSIONS ====================
     match /commissions/{commissionId} {
       allow read: if isOwner(resource.data.userId) || isAdmin();
-      allow create, update: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     // ==================== STAFF COMMISSIONS ====================
     match /staff_commissions/{commissionId} {
       allow read: if isOwner(resource.data.staffUid) || isAdmin();
-      allow create, update: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     // ==================== EXPENSES ====================
     match /expenses/{expenseId} {
-      allow read: if isAdmin();
-      allow create, update: if isAdmin();
+      allow read, write: if isAdmin();
     }
 
     // ==================== PROMOS & DISCOUNTS ====================
@@ -162,11 +294,15 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isAuth();
       allow update: if isOwner(resource.data.userId) || isAdmin();
+      allow delete: if isAdmin();
     }
 
     // ==================== RATE LIMITS ====================
+    // Read by the rate-limited user; created/updated by callables (server
+    // SDK bypasses rules).
     match /rateLimits/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read: if isOwner(userId);
+      allow write: if false;
     }
 
     // ==================== AI SOVEREIGN RULES ====================
@@ -194,35 +330,40 @@ service cloud.firestore {
       allow read: if isOwner(resource.data.userId) || isAdmin();
       allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
       allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     // ==================== MONTHLY STATS ====================
     match /monthly_stats/{month} {
       allow read: if true;
       allow write: if isAdmin();
-      
+
       match /heroes/{heroId} {
         allow read: if true;
+        allow write: if isAdmin();
       }
     }
 
     // ==================== ANALYTICS ====================
     match /analytics/{docId} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+      allow read, write: if isAdmin();
     }
 
     // ==================== AI NOTIFICATION QUEUE ====================
+    // Queue entries are produced by Cloud Functions (server SDK). Clients
+    // may only read/dismiss their own entries.
     match /ai_notifications_queue/{notifId} {
       allow read: if isOwner(resource.data.userId);
-      allow create: if isAuth();
+      allow create: if false;
       allow update, delete: if isOwner(resource.data.userId) || isAdmin();
     }
 
     // ==================== API QUOTA & LOGS ====================
+    // Server-only — written by the API gateway callables; readable by
+    // authenticated admins via the admin app.
     match /api_quota/{provider} {
-      allow read: if isAuth();
-      allow write: if isAuth();
+      allow read: if isStaff();
+      allow write: if false;
     }
 
     match /settings/app_config/{docId} {
@@ -245,9 +386,11 @@ service cloud.firestore {
     }
 
     // ==================== SYSTEM SETTINGS ====================
+    // Bootstrap hole removed: admin-only. Initial seeding is done by the
+    // `runSeed` admin callable.
     match /settings/{docId} {
       allow read: if true;
-      allow write: if isAdmin() || !exists(/databases/$(database)/documents/settings/api_quota);
+      allow write: if isAdmin();
     }
 
     // ==================== SYSTEM DYNAMIC CONFIGS ====================
@@ -266,8 +409,7 @@ service cloud.firestore {
 
     // ==================== SYSTEM BILLING & METRICS ====================
     match /_system/billing/metrics/{docId} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+      allow read, write: if isAdmin();
     }
     match /_system/billing/quotas/{docId} {
       allow read: if true;

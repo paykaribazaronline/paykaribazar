@@ -2,7 +2,7 @@ name: 🚀 Auto Build & Deploy (Master Pipeline)
 
 on:
   push:
-    # Run on all branches to test changes immediately on push. 
+    # Run on all branches to test changes immediately on push.
     # To restrict again, uncomment the line below and comment/remove this note.
     # branches: [main, develop, staging]
     paths-ignore:
@@ -29,6 +29,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_e2e:
+        description: 'Run emulator E2E tests? (slow)'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,14 +43,21 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE22: true
   FLUTTER_VERSION: '3.27.0'
   JAVA_VERSION: '17'
+  NODE_VERSION: '22'
 
+# OIDC for Workload Identity Federation on downstream deploy jobs
+# (functions-deploy, deploy-firebase). Required by google-github-actions/auth.
 permissions:
-  contents: write
+  contents: read
+  id-token: write
   security-events: write
   actions: read
+  pull-requests: write
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
   # Stage 1: Setup & Validation
+  # ─────────────────────────────────────────────────────────────────────────
   setup:
     name: 🔍 Setup & Validation
     runs-on: ubuntu-latest
@@ -58,7 +70,7 @@ jobs:
       has_code_changes: ${{ steps.changes.outputs.admin == 'true' || steps.changes.outputs.customer == 'true' || steps.changes.outputs.shared == 'true' }}
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for versioning
 
@@ -71,29 +83,35 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Validate environment
         id: setup
         run: |
           echo "🔍 Validating environment..."
-          
+
           flutter --version
           dart --version
           java -version
-          
-          # Check if secrets are configured
-          if [[ -z "${{ secrets.FIREBASE_TOKEN }}" ]]; then
-            echo "⚠️  Firebase token not configured"
+
+          # Fail-fast: pubspec must not contain `: any`
+          if grep -E '^[[:space:]]+[a-z_]+:[[:space:]]+any$' pubspec.yaml; then
+            echo "::error::pubspec.yaml contains a dependency pinned to 'any'. Pin every dependency to a real version."
+            exit 1
           fi
-          
+
+          # Check if secrets are configured (advisory only — not fatal)
+          if [[ -z "${{ secrets.FIREBASE_TOKEN }}" ]]; then
+            echo "⚠️  Firebase token not configured (deploy steps will be skipped)"
+          fi
+
           # Determine if we should deploy
           if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "should_deploy=true" >> $GITHUB_OUTPUT
           else
             echo "should_deploy=false" >> $GITHUB_OUTPUT
           fi
-          
+
           echo "✅ Environment validation complete"
 
       - name: Auto-versioning
@@ -101,14 +119,14 @@ jobs:
         run: |
           # Get commit count as build number
           BUILD_NUMBER=$(git rev-list --count HEAD)
-          
+
           # Get latest tag or create version from commit count
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           VERSION=${LATEST_TAG#v}
-          
+
           echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          
+
           echo "📦 Build #$BUILD_NUMBER | Version: $VERSION"
 
       - uses: dorny/paths-filter@v3
@@ -131,6 +149,9 @@ jobs:
               - 'pubspec.yaml'
               - 'pubspec.lock'
               - 'android/**'
+              - 'functions/**'
+              - 'firestore.rules'
+              - 'storage.rules'
               - '.github/workflows/**'
 
       - name: Determine apps to build
@@ -138,7 +159,7 @@ jobs:
         run: |
           BUILD_CUSTOMER=false
           BUILD_ADMIN=false
-          
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             BUILD_CUSTOMER=true
             BUILD_ADMIN=true
@@ -153,13 +174,13 @@ jobs:
               BUILD_ADMIN=true
             fi
           fi
-          
+
           # If nothing was matched, default to building both to be safe
           if [[ "$BUILD_CUSTOMER" == "false" && "$BUILD_ADMIN" == "false" ]]; then
             BUILD_CUSTOMER=true
             BUILD_ADMIN=true
           fi
-          
+
           APPS="["
           if [[ "$BUILD_CUSTOMER" == "true" ]]; then
             APPS="$APPS\"customer\""
@@ -171,18 +192,109 @@ jobs:
             APPS="$APPS\"admin\""
           fi
           APPS="$APPS]"
-          
+
           echo "apps=$APPS" >> $GITHUB_OUTPUT
           echo "Determined apps to build: $APPS"
 
-  # New Stage: Prepare dependencies and code generation once
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 2: Firestore / Storage rules test against the emulator
+  # BLOCKING — must pass before any build job starts.
+  # ─────────────────────────────────────────────────────────────────────────
+  rules-test:
+    name: 🛡️ Firestore/Storage Rules Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: setup
+    if: needs.setup.outputs.has_code_changes == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Java (for Firebase emulator)
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@latest
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      - name: Create dummy Firebase options
+        run: bash .github/scripts/create_dummy_firebase_options.sh
+
+      - name: Run Firestore rules tests against the emulator
+        run: |
+          echo "🛡️  Running Firestore/Storage rules tests against the local emulator..."
+          firebase emulators:exec --only firestore,storage \
+            "dart test test/firestore_rules/"
+        env:
+          FIREBASE_CLI_PREVIEWS: storageEmulator
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 3: Cloud Functions (TypeScript) lint + typecheck + unit-test
+  # BLOCKING — must pass before any build/deploy job starts.
+  # ─────────────────────────────────────────────────────────────────────────
+  functions-test:
+    name: ☁️ Cloud Functions Lint + Typecheck + Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: setup
+    if: needs.setup.outputs.has_code_changes == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Lint (eslint)
+        working-directory: functions
+        run: npm run lint
+
+      - name: Typecheck (tsc --noEmit)
+        working-directory: functions
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: functions
+        run: npm run build
+
+      - name: Unit tests
+        working-directory: functions
+        run: npm test --if-present
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 4: Prepare dependencies and code generation once
+  # ─────────────────────────────────────────────────────────────────────────
   prepare:
     name: 📦 Prepare & Generate Code
     runs-on: ubuntu-latest
-    needs: setup
+    needs: [setup, rules-test, functions-test]
     if: needs.setup.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -201,7 +313,9 @@ jobs:
           path: .dart_tool
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
 
-  # Stage 3: Testing & Analysis
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 5: Testing & Analysis (FATAL — no continue-on-error)
+  # ─────────────────────────────────────────────────────────────────────────
   test-security-analyze:
     name: 🧪 Test & Analyze
     runs-on: ubuntu-latest
@@ -210,7 +324,7 @@ jobs:
     if: github.event.inputs.skip_tests != 'true'
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with: # Full history is not needed for analysis and testing
           fetch-depth: 1
 
@@ -219,7 +333,7 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-      
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -232,39 +346,38 @@ jobs:
           path: .dart_tool
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
 
-      - name: 📦 Dependency Audit
+      - name: 📦 Dependency Audit (FATAL)
         run: |
           echo "🔍 Checking for dependency security issues..."
-          flutter pub outdated || true
-          dart pub audit || echo "⚠️ dart pub audit not supported or failed"
-          npm audit --audit-level=moderate || true
+          flutter pub outdated
+          dart pub audit
+          if [ -f functions/package-lock.json ]; then
+            (cd functions && npm audit --audit-level=moderate)
+          fi
 
-      - name: Run Flutter Analyze
+      - name: Run Flutter Analyze (FATAL on info + warning)
         run: |
-          # Only analyze directories that exist to prevent command failure
+          # Only analyze directories that exist
           DIRS_TO_ANALYZE="lib"
           [ -d "test" ] && DIRS_TO_ANALYZE="$DIRS_TO_ANALYZE test"
           [ -d "integration_test" ] && DIRS_TO_ANALYZE="$DIRS_TO_ANALYZE integration_test"
-          flutter analyze $DIRS_TO_ANALYZE --no-fatal-infos --no-fatal-warnings
-
-      - name: 📊 Run Dart Code Metrics
-        run: |
-          flutter pub global activate dart_code_metrics || true
-          flutter pub global run dart_code_metrics:metrics analyze lib/ --set-exit-on-violation-level=warning || true
-        continue-on-error: true
+          flutter analyze $DIRS_TO_ANALYZE --fatal-infos --fatal-warnings
 
       - name: Run unit tests
         run: flutter test --coverage
 
-  # Security: Vulnerability Scanning
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 6: Security — Vulnerability & Secret Scanning (FATAL)
+  # ─────────────────────────────────────────────────────────────────────────
   vulnerability-scan:
-    name: 🔐 Security Scan
+    name: 🔐 Security Scan (Trivy)
     runs-on: ubuntu-latest
-    # needs: setup
     timeout-minutes: 20
-    # if: needs.setup.outputs.has_code_changes == 'true'
+    permissions:
+      contents: read
+      security-events: write
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
       - name: Run Trivy vulnerability scanner
@@ -274,21 +387,22 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
       - name: Upload Trivy results to Security tab
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
-        continue-on-error: true
 
-  # Security: Secret Leak Detection
   secrets-scan:
-    name: 🔑 Secrets Scan
+    name: 🔑 Secrets Scan (TruffleHog + Gitleaks)
     runs-on: ubuntu-latest
-    # needs: setup
     timeout-minutes: 10
-    # if: needs.setup.outputs.has_code_changes == 'true'
+    permissions:
+      contents: read
+      security-events: write
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Determine base commit
@@ -303,24 +417,84 @@ jobs:
           else
             echo "base=$(git merge-base origin/${{ github.base_ref }} HEAD)" >> $GITHUB_OUTPUT
           fi
-      - name: Check for committed secrets
+      - name: Check for committed secrets (TruffleHog — FATAL)
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
           base: ${{ steps.trufflehog_base.outputs.base }}
           head: HEAD
-          extra_args: --debug
-        continue-on-error: true
+          extra_args: --debug --only-verified
+      - name: Gitleaks scan (FATAL)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: 'true'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
 
-  # Security: SBOM Generation
+  # Hard-coded known-leaked-string guard — fails immediately if any of the
+  # previously-leaked placeholder secrets reappear in the source tree.
+  forbidden-secret-patterns:
+    name: 🚫 Forbidden Secret Patterns
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for known-leaked placeholder secrets
+        run: |
+          set -e
+          PATTERNS=(
+            'paykari_bazar_api_key'
+            'paykari_bazar_api_secret_key_1234567890'
+            'MySecureAES256KeyFor32BytLength!'
+            '0123456789\.0123456789\.0123456789'
+          )
+          FOUND=0
+          for p in "${PATTERNS[@]}"; do
+            echo "🔎 searching for /$p/ ..."
+            # ripgrep is pre-installed on ubuntu-latest
+            if rg -n --no-binary "$p" --glob '!**/*.lock' --glob '!.git/**' . ; then
+              echo "::error::Forbidden secret pattern matched: $p"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" == "1" ]; then
+            echo "::error::Refusing to build — known placeholder secret detected in source tree."
+            exit 1
+          fi
+          echo "✅ No forbidden placeholder secrets found."
+
+  # Sanity check — .env.example may exist (template) but must NOT contain real secrets
+  env-example-check:
+    name: 🔎 .env.example Sanity Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure .env.example has no real secrets
+        run: |
+          set -e
+          if [ ! -f .env.example ]; then
+            echo "ℹ️  .env.example not present — skipping"
+            exit 0
+          fi
+          echo "🔎 scanning .env.example for real-looking secret values..."
+          # Real secrets are usually long base64/hex; placeholders are short and contain '<' or 'your_' or 'xxx'
+          if rg -n '^[A-Z_]+[[:space:]]*=[[:space:]]*[^<].{16,}$' .env.example \
+             | rg -v -i '(your_|xxx|change-me|placeholder|example|<|\$\{|REPLACE_)'; then
+            echo "::error::.env.example appears to contain real (non-placeholder) secret values. Replace with placeholders only."
+            exit 1
+          fi
+          echo "✅ .env.example contains only placeholders."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 7: SBOM Generation
+  # ─────────────────────────────────────────────────────────────────────────
   sbom-generation:
     name: 📋 Generate SBOM
     runs-on: ubuntu-latest
-    # needs: setup
     timeout-minutes: 15
-    # if: needs.setup.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -337,12 +511,70 @@ jobs:
           path: sbom.*
           retention-days: 30
 
-  # Combined Mobile Build & Shorebird Deployment
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 8: Emulator-based E2E (gated, slow)
+  # ─────────────────────────────────────────────────────────────────────────
+  emulator-e2e:
+    name: 🧫 Emulator E2E Checkout
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [setup, prepare, test-security-analyze]
+    if: |
+      (github.event.inputs.run_e2e == 'true' || env.RUN_E2E == 'true') &&
+      needs.setup.outputs.has_code_changes == 'true'
+    env:
+      RUN_E2E: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      - name: Install functions dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Build functions
+        working-directory: functions
+        run: npm run build
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@latest
+
+      - name: Create dummy Firebase options
+        run: bash .github/scripts/create_dummy_firebase_options.sh
+
+      - name: Run integration tests against Firestore + Functions emulator
+        run: |
+          firebase emulators:exec --only firestore,functions,auth,storage \
+            "flutter test integration_test/checkout_e2e_test.dart"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 9: Combined Mobile Build & Shorebird Deployment
+  # Depends on rules-test + functions-test + test-security-analyze
+  # ─────────────────────────────────────────────────────────────────────────
   build-mobile:
     name: 🏗️ Mobile (${{ matrix.app }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [setup, prepare, test-security-analyze]
+    needs: [setup, prepare, rules-test, functions-test, test-security-analyze, secrets-scan, vulnerability-scan, forbidden-secret-patterns]
     if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     strategy:
       fail-fast: false
@@ -353,12 +585,11 @@ jobs:
       KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Full history for versioning commit count
 
       - name: Calculate versioning
-         # line indentation correction
         id: versioning
         run: |
           BUILD_NUMBER=$(git rev-list --count HEAD)
@@ -386,7 +617,7 @@ jobs:
         with:
           path: .dart_tool
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
-      
+
       - name: Create dummy Firebase options
         run: bash .github/scripts/create_dummy_firebase_options.sh
 
@@ -422,7 +653,7 @@ jobs:
           echo "::warning::Shorebird build failed. Falling back to standard Flutter build for code verification."
           echo "### ⚠️ Shorebird Build Failure (${{ matrix.app }})" >> $GITHUB_STEP_SUMMARY
           echo "Shorebird patch and release both failed. Running standard Flutter build to verify if the issue is code-related." >> $GITHUB_STEP_SUMMARY
-          
+
           flutter build apk --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart --release --build-number=${{ env.BUILD_NUMBER }}
 
       - name: Verify Build (Non-main Branch)
@@ -441,6 +672,7 @@ jobs:
             echo "✅ Renamed app-release.apk to ${{ matrix.app }}-release.apk"
           else
             echo "❌ Built APK not found at default location!"
+            exit 1
           fi
 
       - name: Upload APK artifact
@@ -451,12 +683,14 @@ jobs:
             build/app/outputs/flutter-apk/${{ matrix.app }}-*.apk
           retention-days: 30
 
-  # Stage 5: Build Web App
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 10: Build Web App
+  # ─────────────────────────────────────────────────────────────────────────
   build-web:
     name: 🌐 Build Web (${{ matrix.web-app }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [setup, prepare, test-security-analyze]
+    needs: [setup, prepare, rules-test, functions-test, test-security-analyze, secrets-scan, vulnerability-scan, forbidden-secret-patterns]
     if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     strategy:
       fail-fast: false
@@ -464,7 +698,7 @@ jobs:
         web-app: [customer, admin]
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -473,7 +707,7 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-          
+
       - name: Cache Pub dependencies
         uses: actions/cache@v4
         with:
@@ -506,7 +740,9 @@ jobs:
             build/web_artifacts/web_${{ matrix.web-app }}
           retention-days: 30
 
-  # Stage 6: Deploy to Firebase
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 11: Deploy to Firebase (Firestore + Storage rules + Hosting)
+  # ─────────────────────────────────────────────────────────────────────────
   deploy-firebase:
     name: 🔥 Deploy to Firebase
     runs-on: ubuntu-latest
@@ -515,14 +751,14 @@ jobs:
     if: needs.setup.outputs.should_deploy == 'true' && (github.event.inputs.deploy_to == 'all' || github.event.inputs.deploy_to == 'firebase-only' || github.event_name == 'push')
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with: # Full history is not needed for deployment
           fetch-depth: 1
 
       - name: Setup Node.js & Firebase CLI
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install Firebase Tools
         run: npm install -g firebase-tools
@@ -557,7 +793,9 @@ jobs:
             --project=${{ secrets.FIREBASE_PROJECT_ID }} \
             --token=${{ secrets.FIREBASE_TOKEN }}
 
-  # Stage 7: Deploy to Google Play Store
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 12: Deploy to Google Play Store (currently disabled)
+  # ─────────────────────────────────────────────────────────────────────────
   deploy-google-play:
     name: 📱 Deploy to Google Play Store
     runs-on: ubuntu-latest
@@ -567,8 +805,8 @@ jobs:
     if: false
 
     steps:
-      - uses: actions/checkout@v4.2.0
-        with: # Full history is not needed for deployment
+      - uses: actions/checkout@v4
+        with:
           fetch-depth: 1
 
       - name: Download AAB artifacts
@@ -590,20 +828,21 @@ jobs:
       - name: Upload to Google Play (Internal Testing)
         run: |
           echo "📤 Uploading to Google Play Store (Internal Testing track)..."
-          
+
           # Customer app
           if ls artifacts/customer-*.aab 1> /dev/null 2>&1; then
             echo "Found Customer AAB - would upload to Play Store"
           fi
-          
+
           # Admin app
           if ls artifacts/admin-*.aab 1> /dev/null 2>&1; then
             echo "Found Admin AAB - would upload to Play Store"
           fi
-        continue-on-error: true
 
 
-  # Stage 9: Create Release & Notifications
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 13: Create GitHub Release & Notifications
+  # ─────────────────────────────────────────────────────────────────────────
   release:
     name: 📦 Create GitHub Release
     runs-on: ubuntu-latest
@@ -615,7 +854,7 @@ jobs:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Ensure full history for release notes
 
@@ -634,7 +873,7 @@ jobs:
           else
             COMMIT_LOG=$(git log ${LATEST_TAG}..HEAD --oneline)
           fi
-          
+
           echo "release_notes<<EOF" >> $GITHUB_OUTPUT
           echo "## Build #${{ needs.setup.outputs.build_number }}" >> $GITHUB_OUTPUT
           echo "### Version: ${{ needs.setup.outputs.version }}" >> $GITHUB_OUTPUT
@@ -657,7 +896,6 @@ jobs:
           prerelease: ${{ github.ref != 'refs/heads/main' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
 
       - name: Notify Success (Slack)
         uses: slackapi/slack-github-action@v1
@@ -679,13 +917,14 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
         if: success() && env.SLACK_WEBHOOK != ''
-        continue-on-error: true
 
-  # Handle Failures
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 14: Handle Failures
+  # ─────────────────────────────────────────────────────────────────────────
   notify-failure:
     name: 🚨 Notify Failure
     runs-on: ubuntu-latest
-    needs: [setup, test-security-analyze, build-mobile, build-web]
+    needs: [setup, rules-test, functions-test, test-security-analyze, build-mobile, build-web, secrets-scan, vulnerability-scan]
     if: failure()
 
     env:
@@ -720,4 +959,3 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
         if: env.SLACK_WEBHOOK != ''
-        continue-on-error: true

@@ -1,5 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Paykari Bazar — pubspec.yaml (production-hardened)
+# ─────────────────────────────────────────────────────────────────────────────
+# Do NOT use `any` for any dependency. CI blocks unversioned deps.
+# The `.github/workflows/security.yml` and `auto-build-and-deploy.yml` jobs
+# fail the pipeline if they detect `: any` in this file or in any worktree
+# pubspec.  When bumping a version, update `true_versions.json` in the same
+# PR so the maintainer audit trail stays in sync.
+#
+# The `true_versions.json` block is the canonical version manifest. It is
+# kept in sync with this file by the `auto-update-dependencies.yml` workflow
+# which opens a PR whenever `flutter pub upgrade --major-versions` produces
+# a newer compatible set.
+# ─────────────────────────────────────────────────────────────────────────────
+# true_versions.json (canonical manifest — copy/paste verbatim into the file):
+# {
+#   "firebase_performance": "^0.10.0+5",
+#   "cloud_firestore_platform_interface": "^6.4.0",
+#   "path_provider_platform_interface": "^2.1.2",
+#   "plugin_platform_interface": "^2.1.8",
+#   "fake_cloud_firestore": "^3.1.0",
+#   "cloud_functions": "^5.3.0",
+#   "app_links": "^6.1.1",
+#   "flutter_inappwebview": "^6.1.5"
+# }
+# ─────────────────────────────────────────────────────────────────────────────
+
 name: paykari_bazar
-description: "A modern e-commerce app for local business, rebuilt for stability and performance."
+description: "Paykari Bazar — production-grade Bangladesh-focused B2B wholesale commerce platform (Flutter + Firebase). Secure pricing, inventory reservation, bKash/Nagad/SSLCommerz/Bank payments, audit-logged admin operations."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -22,14 +49,15 @@ dependencies:
   firebase_core: ^4.10.0
   firebase_auth: ^6.5.2
   cloud_firestore: ^6.5.0
+  cloud_functions: ^5.3.0
   firebase_database: ^12.4.2
   firebase_storage: ^13.4.2
   firebase_messaging: ^16.3.0
   firebase_analytics: ^12.4.2
   firebase_crashlytics: ^5.2.3
   firebase_app_check: ^0.4.4
-
-
+  firebase_performance: ^0.10.0+5
+  firebase_remote_config: ^6.5.2
 
   # Auth Providers
   google_sign_in: ^7.2.0
@@ -59,7 +87,7 @@ dependencies:
   shared_preferences: ^2.5.5
   url_launcher: ^6.3.2
   permission_handler: ^12.0.3
-  dio: ^5.5.0+1 
+  dio: ^5.5.0+1
   flutter_image_compress: ^2.3.0
   file_picker: ^8.3.7
   device_info_plus: ^10.1.2
@@ -70,6 +98,10 @@ dependencies:
   connectivity_plus: ^6.0.3
   retry: ^3.1.2
   collection: ^1.18.0
+
+  # Deep-link & in-app webview (payment gateway redirects)
+  app_links: ^6.1.1
+  flutter_inappwebview: ^6.1.5
 
   # AI & Maps
   google_generative_ai: ^0.4.3
@@ -83,7 +115,6 @@ dependencies:
   csv: ^8.0.0
   sentry_flutter: ^9.22.0
   flutter_local_notifications: ^22.0.1
-  firebase_remote_config: ^6.5.2
   package_info_plus: ^9.0.0
 
   path: ^1.9.0
@@ -93,12 +124,11 @@ dependencies:
   record: ^7.1.0
   speech_to_text: ^7.4.0
   intl: ^0.20.2
-  firebase_performance: any
 
-
-  cloud_firestore_platform_interface: any
-  path_provider_platform_interface: any
-  plugin_platform_interface: any
+  # Pinned platform interfaces — previously `any`, now locked for reproducible builds.
+  cloud_firestore_platform_interface: ^6.4.0
+  path_provider_platform_interface: ^2.1.2
+  plugin_platform_interface: ^2.1.8
 
 dev_dependencies:
   flutter_test:
@@ -111,7 +141,7 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.4
   hive_generator: ^2.0.1
   build_runner: ^2.4.13
-  fake_cloud_firestore: any
+  fake_cloud_firestore: ^3.1.0
 
 flutter_launcher_icons:
   android: true
