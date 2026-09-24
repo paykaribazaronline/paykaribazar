@@ -15,6 +15,7 @@ on:
       - 'firestore.rules'
       - 'storage.rules'
       - 'firebase.json'
+      - 'pubspec.yaml'
       - 'test/firestore_rules/**'
       - '.github/workflows/rules-emulator-test.yml'
   pull_request:
@@ -22,6 +23,7 @@ on:
       - 'firestore.rules'
       - 'storage.rules'
       - 'firebase.json'
+      - 'pubspec.yaml'
       - 'test/firestore_rules/**'
       - '.github/workflows/rules-emulator-test.yml'
   workflow_dispatch:
@@ -36,7 +38,7 @@ permissions:
 env:
   NODE_VERSION: '22'
   JAVA_VERSION: '17'
-  FLUTTER_VERSION: '3.27.0'
+  FLUTTER_VERSION: '3.29.0'
 
 jobs:
   rules-emulator-test:
