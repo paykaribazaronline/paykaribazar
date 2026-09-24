@@ -45,7 +45,7 @@ env:
   # other transitive deps. Older versions (3.27/3.29) caused `flutter pub get`
   # to fail with "version solving failed" in the rules-emulator-test job.
   FLUTTER_VERSION: 'stable'  # channel: stable — always latest, provides Dart 3.10+
-  JAVA_VERSION: '17'
+  JAVA_VERSION: '21'  # firebase-tools requires JDK 21+
   NODE_VERSION: '22'
 
 # OIDC for Workload Identity Federation on downstream deploy jobs

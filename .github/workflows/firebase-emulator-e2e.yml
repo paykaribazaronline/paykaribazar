@@ -31,7 +31,7 @@ permissions:
 
 env:
   NODE_VERSION: '22'
-  JAVA_VERSION: '17'
+  JAVA_VERSION: '21'  # firebase-tools requires JDK 21+
   # Flutter 3.35.0 ships Dart 3.9 — required by shared_preferences ^2.5.5
   FLUTTER_VERSION: 'stable'  # channel: stable — always latest, provides Dart 3.10+
 

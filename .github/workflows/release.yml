@@ -41,7 +41,7 @@ jobs:
       - name: Setup Java (emulator)
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'  # firebase-tools requires JDK 21+
           distribution: 'temurin'
 
       - name: Install Firebase CLI
@@ -211,7 +211,7 @@ jobs:
       - name: ☕ Setup Java
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'  # firebase-tools requires JDK 21+
           distribution: 'temurin'
           cache: 'gradle'
 
