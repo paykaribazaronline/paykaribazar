@@ -354,8 +354,12 @@ jobs:
       - name: 📦 Dependency Audit (FATAL)
         run: |
           echo "🔍 Checking for dependency security issues..."
+          # `dart pub audit` was removed from the Dart SDK (deprecated in 3.x,
+          # removed in newer versions) — it now errors with
+          # "Could not find a subcommand named 'audit' for 'dart pub'".
+          # `flutter pub outdated` covers Dart-side package freshness.
+          # `npm audit --audit-level=moderate` covers the Cloud Functions deps.
           flutter pub outdated
-          dart pub audit
           if [ -f functions/package-lock.json ]; then
             (cd functions && npm audit --audit-level=moderate)
           fi
