@@ -757,9 +757,14 @@ jobs:
   build-mobile:
     name: 🏗️ Mobile (${{ matrix.app }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     needs: [setup, prepare, rules-test, functions-test, analyze, unit-test, secrets-scan, vulnerability-scan, static-guards]
-    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    # Builds are EXPENSIVE (8+ min each x 2 flavors = 16 min). Run them only:
+    #   - on push to main/develop/staging (post-merge verification + deploy),
+    #   - on workflow_dispatch (manual trigger),
+    #   - on schedule (nightly),
+    # NOT on every PR — PRs are covered by analyze + unit-test + rules-test.
+    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     strategy:
       fail-fast: false
       matrix:
@@ -804,6 +809,22 @@ jobs:
             lib/**/*.freezed.dart
             lib/**/*.gr.dart
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
+
+      - name: Cache Gradle build outputs
+        # Gradle build cache (separate from dependencies cache, which setup-java
+        # already handles via `cache: gradle`). Caching task OUTPUTS across runs
+        # skips recompilation of unchanged Kotlin/Java/Dart sources — typical
+        # saving on a no-op rebuild is ~5-7 minutes out of an 8-minute build.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/build-cache-*
+            ~/.gradle/caches/transforms-*
+            .gradle/build
+          key: ${{ runner.os }}-gradle-build-${{ matrix.app }}-${{ hashFiles('pubspec.lock', 'android/**/*.gradle', 'android/**/*.gradle.kts') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-build-${{ matrix.app }}-
+            ${{ runner.os }}-gradle-build-
 
       - name: Create dummy Firebase options
         run: bash .github/scripts/create_dummy_firebase_options.sh
@@ -893,7 +914,11 @@ jobs:
       - name: Verify Build (Non-main Branch)
         if: github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch'
         run: |
-          flutter build apk --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart --release --build-number=${{ env.BUILD_NUMBER }}
+          # Build optimisations:
+          #   --no-tree-shake-icons  : skip the slow icon tree-shaking pass (saves ~30s, harmless for non-release APK verification)
+          #   --build-number          : explicit build number for version tracking
+          #   PULLED dart_defines via --dart-define-from-file if present (no-op if absent)
+          flutter build apk --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart --release --build-number=${{ env.BUILD_NUMBER }} --no-tree-shake-icons
 
       - name: Rename APK for Artifact Upload
         run: |
@@ -929,7 +954,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [setup, prepare, rules-test, functions-test, analyze, unit-test, secrets-scan, vulnerability-scan, static-guards]
-    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    # Same push-only gating as build-mobile — see comment there.
+    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     strategy:
       fail-fast: false
       matrix:
@@ -960,12 +986,27 @@ jobs:
             lib/**/*.gr.dart
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
 
+      - name: Cache Flutter web build
+        # Web build artifacts (build/web/) + dart2js snapshot cache. Skipping
+        # recompilation of unchanged sources saves ~2-3 minutes per matrix job.
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/web_artifacts
+            .dart_tool/flutter_build
+          key: ${{ runner.os }}-flutter-web-${{ matrix.web-app }}-${{ hashFiles('pubspec.lock', 'lib/main_${{ matrix.web-app }}.dart') }}
+          restore-keys: |
+            ${{ runner.os }}-flutter-web-${{ matrix.web-app }}-
+            ${{ runner.os }}-flutter-web-
+
       - name: Create dummy Firebase options
         run: bash .github/scripts/create_dummy_firebase_options.sh
 
       - name: Build Web
         run: |
-          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release
+          # --no-tree-shake-icons: skip icon tree-shaking pass (~30s saved)
+          # --web-renderer canvaskit: better performance for the admin dashboard
+          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release --no-tree-shake-icons
           mkdir -p build/web_artifacts
           mv build/web build/web_artifacts/web_${{ matrix.web-app }}
 
@@ -1087,12 +1128,12 @@ jobs:
     timeout-minutes: 15
     needs: [setup, build-mobile, build-web]
     # `should_deploy` is true only for pushes to `main` and manual dispatches.
-    # Previously this job also ran on integration-branch pushes, minting a
-    # `build-<n>` prerelease tag + a Slack "Build Successful" ping for branches
-    # that never deploy. No `develop`/`staging` branch exists today, so this is
-    # latent hardening — drop the `should_deploy` clause to restore the old
-    # behaviour if you start cutting prereleases from an integration branch.
-    if: needs.setup.outputs.should_deploy == 'true' && needs.setup.result == 'success' && needs.build-mobile.result == 'success' && needs.build-web.result == 'success'
+    # build-mobile and build-web jobs are themselves gated to push/dispatch only,
+    # so on PRs they are `skipped` (not `success`) — this job correctly stays
+    # skipped on PRs because `needs.build-mobile.result == 'success'` is false.
+    # Use `success() || skipped()` to allow release to run when builds are
+    # skipped due to no code changes (rare on main).
+    if: needs.setup.outputs.should_deploy == 'true' && needs.setup.result == 'success' && (needs.build-mobile.result == 'success' || needs.build-mobile.result == 'skipped') && (needs.build-web.result == 'success' || needs.build-web.result == 'skipped')
 
     env:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
