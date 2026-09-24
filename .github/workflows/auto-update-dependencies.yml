@@ -107,7 +107,7 @@ jobs:
             - [ ] Spot-check release notes of any package jumping a major version
             - [ ] Smoke-test customer app (`flutter run -t lib/main_customer.dart --flavor customer`)
             - [ ] Smoke-test admin app (`flutter run -t lib/main_admin.dart --flavor admin`)
-            - [ ] Re-run `firebase emulators:exec --only firestore 'dart test test/firestore_rules/'`
+            - [ ] Re-run `firebase emulators:exec --only firestore 'flutter test test/firestore_rules/'`
           branch: update/dependencies-${{ github.run_number }}
           delete-branch: true
           labels: |
