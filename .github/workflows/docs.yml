@@ -95,7 +95,7 @@ jobs:
       - name: Install TypeDoc (functions API doc generator)
         run: |
           if [ -f functions/package.json ]; then
-            (cd functions && npm ci && npm install --no-save typedoc typescript)
+            (cd functions && npm install && npm install --no-save typedoc typescript)
           fi
 
       - name: Generate functions API docs

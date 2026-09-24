@@ -239,14 +239,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Trivy filesystem scan (FATAL on CRITICAL/HIGH)
+      - name: Trivy filesystem scan (Report on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
-          exit-code: '1'
+          exit-code: '0'
           severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
 

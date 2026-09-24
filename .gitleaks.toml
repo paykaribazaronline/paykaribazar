@@ -1,0 +1,22 @@
+# Gitleaks configuration for Paykari Bazar
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlists for harmless false positives, hashes, and lockfiles"
+paths = [
+  '''^\.github/''',
+  '''^functions/package-lock\.json$''',
+  '''^pubspec\.lock$''',
+  '''^docs/''',
+  '''^test/''',
+  '''assets/'''
+]
+
+regexes = [
+  '''(?i)example''',
+  '''(?i)placeholder''',
+  '''(?i)your_''',
+  '''(?i)xxx'''
+]

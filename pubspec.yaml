@@ -18,7 +18,6 @@
 #   "cloud_firestore_platform_interface": "^6.4.0",
 #   "path_provider_platform_interface": "^2.1.2",
 #   "plugin_platform_interface": "^2.1.8",
-#   "fake_cloud_firestore": "^3.1.0",
 #   "cloud_functions": "^5.3.0",
 #   "app_links": "^6.1.1",
 #   "flutter_inappwebview": "^6.1.5"
@@ -141,7 +140,6 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.4
   hive_generator: ^2.0.1
   build_runner: ^2.4.13
-  fake_cloud_firestore: ^3.1.0
 
 flutter_launcher_icons:
   android: true
