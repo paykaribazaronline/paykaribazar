@@ -61,13 +61,12 @@ class SecureAuthService {
         return false;
       }
 
+      // local_auth 3.x removed `AuthenticationOptions` — its fields are now
+      // top-level named parameters on `authenticate()` directly.
+      // `stickyAuth` is now named `persistAcrossBackgrounding: true`.
       return await _localAuth.authenticate(
         localizedReason: localizedReason,
-        options: AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: true,
-          useErrorDialogs: useErrorDialogs,
-        ),
+        persistAcrossBackgrounding: true,
       );
     } catch (e) {
       debugPrint('❌ Biometric authentication failed: $e');
@@ -82,9 +81,7 @@ class SecureAuthService {
     try {
       return await _localAuth.authenticate(
         localizedReason: localizedReason,
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-        ),
+        persistAcrossBackgrounding: true,
       );
     } catch (e) {
       debugPrint('❌ Sensitive operation authentication failed: $e');

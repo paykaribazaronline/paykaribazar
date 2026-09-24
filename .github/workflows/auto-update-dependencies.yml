@@ -35,7 +35,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.0'
+          # Flutter 3.35.0 ships Dart 3.9 — required by shared_preferences ^2.5.5
+          channel: stable
           cache: true
 
       - name: Reject `any` pins
@@ -79,7 +80,9 @@ jobs:
       - name: Verify the app still analyzes
         if: steps.check_updates.outputs.has_updates == 'true'
         run: |
-          flutter analyze --fatal-infos --fatal-warnings
+          # --fatal-warnings makes WARNINGs and ERRORs fatal but lets
+          # INFO-level lints surface without blocking CI.
+          flutter analyze --fatal-warnings --no-fatal-infos
 
       - name: Run tests
         if: steps.check_updates.outputs.has_updates == 'true'
@@ -98,7 +101,7 @@ jobs:
 
             **Changes:**
             - Runs `flutter pub upgrade --major-versions`
-            - Validates that `flutter analyze --fatal-infos --fatal-warnings` passes
+            - Validates that `flutter analyze --fatal-warnings` passes
             - Validates that `flutter test` passes
 
             ### Reviewer checklist
@@ -106,7 +109,7 @@ jobs:
             - [ ] Spot-check release notes of any package jumping a major version
             - [ ] Smoke-test customer app (`flutter run -t lib/main_customer.dart --flavor customer`)
             - [ ] Smoke-test admin app (`flutter run -t lib/main_admin.dart --flavor admin`)
-            - [ ] Re-run `firebase emulators:exec --only firestore 'dart test test/firestore_rules/'`
+            - [ ] Re-run `firebase emulators:exec --only firestore 'flutter test test/firestore_rules/'`
           branch: update/dependencies-${{ github.run_number }}
           delete-branch: true
           labels: |

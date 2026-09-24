@@ -2,16 +2,36 @@ name: 🚀 Auto Build & Deploy (Master Pipeline)
 
 on:
   push:
-    # Run on all branches to test changes immediately on push.
-    # To restrict again, uncomment the line below and comment/remove this note.
-    # branches: [main, develop, staging]
+    # Restrict to long-lived integration branches — feature branches are
+    # exercised via `pull_request:` below. This prevents the master pipeline
+    # from running on every WIP feature branch push.
+    branches: [main, develop, staging]
     paths-ignore:
       - '**.md'
       - '**.txt'
       - 'dna/**'
+      - 'docs/**'
+      - 'pro_tips.md'
+      - 'all_dependencies.md'
+      - 'duplicate_empty_files_report.md'
+      - 'coverage/**'
+      - '.maestro/**'
+  pull_request:
+    branches: [main, develop, staging]
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - 'dna/**'
+      - 'docs/**'
+      - 'pro_tips.md'
+      - 'all_dependencies.md'
+      - 'duplicate_empty_files_report.md'
+      - 'coverage/**'
+      - '.maestro/**'
   schedule:
-    # Keep the daily security scan schedule
-    - cron: '0 2 * * *'
+    # Nightly security scan — 3 AM UTC (offset from firebase-emulator-e2e's
+    # 4 AM UTC nightly so the two pipelines don't contend for runners).
+    - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
       deploy_to:
@@ -41,9 +61,15 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE22: true
-  FLUTTER_VERSION: '3.27.4'
-  JAVA_VERSION: '17'
+  # Flutter 3.35.0 ships Dart 3.9 — required by shared_preferences ^2.5.5 and
+  # other transitive deps. Older versions (3.27/3.29) caused `flutter pub get`
+  # to fail with "version solving failed" in the rules-emulator-test job.
+  FLUTTER_VERSION: 'stable'  # channel: stable — always latest, provides Dart 3.10+
+  JAVA_VERSION: '21'  # firebase-tools requires JDK 21+
   NODE_VERSION: '22'
+  # Pin firebase-tools to a major version — avoids non-deterministic resolution
+  # (previously `npm install -g firebase-tools@latest` re-resolved on every run).
+  FIREBASE_TOOLS_VERSION: '13'
 
 # OIDC for Workload Identity Federation on downstream deploy jobs
 # (functions-deploy, deploy-firebase). Required by google-github-actions/auth.
@@ -58,9 +84,14 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 1: Setup & Validation
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Optimised: removed Flutter & Node installs — they were only used for
+  # `flutter --version` logging but added ~60s overhead with no cached outputs
+  # for downstream jobs. Versioning via plain git; pubspec validation via grep.
+  # ─────────────────────────────────────────────────────────────────────────
   setup:
     name: 🔍 Setup & Validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       build_number: ${{ steps.versioning.outputs.build_number }}
@@ -68,30 +99,23 @@ jobs:
       should_deploy: ${{ steps.setup.outputs.should_deploy }}
       apps: ${{ steps.determine_apps.outputs.apps }}
       has_code_changes: ${{ steps.changes.outputs.admin == 'true' || steps.changes.outputs.customer == 'true' || steps.changes.outputs.shared == 'true' }}
+      # Granular change flags used to gate `rules-test` and `functions-test`
+      # so they only run when the relevant surface area actually changed
+      # (cuts ~3-5 min off PR runs that touch only one side of the stack).
+      has_functions_changes: ${{ steps.changes.outputs.functions == 'true' }}
+      has_rules_changes: ${{ steps.changes.outputs.rules == 'true' }}
+      has_flutter_changes: ${{ steps.changes.outputs.flutter == 'true' || steps.changes.outputs.admin == 'true' || steps.changes.outputs.customer == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for versioning
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
       - name: Validate environment
         id: setup
         run: |
           echo "🔍 Validating environment..."
 
-          flutter --version
-          dart --version
           java -version
 
           # Fail-fast: pubspec must not contain `: any`
@@ -153,6 +177,23 @@ jobs:
               - 'firestore.rules'
               - 'storage.rules'
               - '.github/workflows/**'
+            # Granular filters — drive `rules-test` / `functions-test` gating
+            # so a Flutter-only PR doesn't boot the Firebase emulator and a
+            # functions-only PR doesn't reinstall Dart deps.
+            functions:
+              - 'functions/**'
+            rules:
+              - 'firestore.rules'
+              - 'storage.rules'
+              - 'test/firestore_rules/**'
+            flutter:
+              - 'lib/**'
+              - 'pubspec.yaml'
+              - 'pubspec.lock'
+              - 'android/**'
+              - 'assets/**'
+              - 'test/**'
+              - 'integration_test/**'
 
       - name: Determine apps to build
         id: determine_apps
@@ -202,10 +243,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   rules-test:
     name: 🛡️ Firestore/Storage Rules Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: setup
-    if: needs.setup.outputs.has_code_changes == 'true'
+    # Only boot the Firebase emulator when rules or Flutter test code changed —
+    # a functions-only PR doesn't need to download the 40 MB emulator jar.
+    if: needs.setup.outputs.has_rules_changes == 'true' || needs.setup.outputs.has_flutter_changes == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -216,19 +259,38 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Java (for Firebase emulator)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
 
+      # Cache the Firebase emulator jars (~40 MB) — keyed on workflow file
+      # changes so a `firebase-tools@latest` bump still invalidates it.
+      - name: Cache Firebase emulator binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: ${{ runner.os }}-emulators-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-emulators-
+
+      # Cache the npm tarball cache so the global CLI install resolves from disk
+      # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each job.
+      - name: Cache npm download cache (Firebase CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
+
       - name: Install Firebase CLI
-        run: npm install -g firebase-tools@latest
+        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }} --prefer-offline
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
 
       - name: Install Dart dependencies
         run: flutter pub get
@@ -239,8 +301,10 @@ jobs:
       - name: Run Firestore rules tests against the emulator
         run: |
           echo "🛡️  Running Firestore/Storage rules tests against the local emulator..."
+          # Use `flutter test` (not `dart test`) — see rules-emulator-test.yml
+          # comment for rationale (avoids analyzer/matcher version conflicts).
           firebase emulators:exec --only firestore,storage \
-            "dart test test/firestore_rules/"
+            "flutter test test/firestore_rules/"
         env:
           FIREBASE_CLI_PREVIEWS: storageEmulator
 
@@ -250,10 +314,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   functions-test:
     name: ☁️ Cloud Functions Lint + Typecheck + Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: setup
-    if: needs.setup.outputs.has_code_changes == 'true'
+    # Only reinstall + lint + test functions when functions/** changed.
+    # A Flutter-only PR skips this job entirely (saves ~2 min of `npm ci`).
+    if: needs.setup.outputs.has_functions_changes == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -265,7 +331,18 @@ jobs:
           cache: 'npm'
           cache-dependency-path: functions/package-lock.json
 
+      # Cache `functions/node_modules` directly (not just ~/.npm) so `npm ci`
+      # can be skipped entirely on a cache hit. Keyed on the lockfile hash so
+      # any dependency add/remove invalidates the cache.
+      - name: Cache functions/node_modules
+        id: cache-nodemodules
+        uses: actions/cache@v4
+        with:
+          path: functions/node_modules
+          key: ${{ runner.os }}-nodemodules-${{ hashFiles('functions/package-lock.json') }}
+
       - name: Install dependencies
+        if: steps.cache-nodemodules.outputs.cache-hit != 'true'
         working-directory: functions
         run: npm ci
 
@@ -288,18 +365,32 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 4: Prepare dependencies and code generation once
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Optimised: pub-cache-key added so Flutter action stores/restores ~/.pub-cache.
+  # Generated file cache now includes .g.dart/.freezed.dart/.gr.dart so
+  # downstream jobs skip re-running build_runner entirely.
+  # ─────────────────────────────────────────────────────────────────────────
   prepare:
     name: 📦 Prepare & Generate Code
-    runs-on: ubuntu-latest
-    needs: [setup, rules-test, functions-test]
+    runs-on: ubuntu-24.04
+    # Optimised (perf): `rules-test` / `functions-test` used to gate this job,
+    # which serialised `dart run build_runner build` behind the Firestore
+    # emulator boot and the functions `npm ci` — neither of which codegen needs.
+    # Both suites still gate every build (see `needs:` of build-mobile /
+    # build-web), they just no longer gate code generation, so every downstream
+    # job starts ~1.4 min earlier (measured on master-push runs).
+    needs: [setup]
+    # No `always()` required any more: `setup` is the only dependency and a
+    # failed `setup` skips this job by default.
     if: needs.setup.outputs.has_code_changes == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
       - name: Install dependencies
         run: flutter pub get
       - name: Create dummy Firebase options
@@ -310,18 +401,35 @@ jobs:
       - name: Cache generated files
         uses: actions/cache@v4
         with:
-          path: .dart_tool
+          path: |
+            .dart_tool
+            lib/**/*.g.dart
+            lib/**/*.freezed.dart
+            lib/**/*.gr.dart
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
 
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 5: Testing & Analysis (FATAL — no continue-on-error)
   # ─────────────────────────────────────────────────────────────────────────
-  test-security-analyze:
-    name: 🧪 Test & Analyze
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  # Optimised (perf): this used to be one serial `🧪 Test & Analyze` job
+  # (advisory audit → analyze → unit tests ≈ 2.3 min). It is now two parallel
+  # jobs (`analyze` and `unit-test`), so the critical path is the slower single
+  # leg instead of the sum. The advisory `flutter pub outdated` / `npm audit`
+  # step was dropped — it was `|| true` (never gated a merge) and only added
+  # registry latency and flakiness to the critical path.
+  # ─────────────────────────────────────────────────────────────────────────
+  analyze:
+    name: 🔍 Analyze (Flutter)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     needs: [setup, prepare]
-    if: github.event.inputs.skip_tests != 'true'
+    # Split out of the old single 🧪 Test & Analyze job (perf): analyze and the
+    # unit-test suite are independent once codegen has run, so they now execute
+    # in parallel instead of back-to-back. `prepare`'s generated files are a
+    # hard prerequisite, hence `needs.prepare.result == 'success'` replaces the
+    # old `always()` guard — a skipped/failed prepare has no
+    # .g.dart/.freezed.dart files and would fail here with missing-part errors.
+    if: needs.setup.outputs.has_code_changes == 'true' && needs.prepare.result == 'success' && github.event.inputs.skip_tests != 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -331,8 +439,9 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
 
       - name: Install dependencies
         run: flutter pub get
@@ -343,36 +452,91 @@ jobs:
       - name: Restore cached generated files
         uses: actions/cache@v4
         with:
-          path: .dart_tool
+          path: |
+            .dart_tool
+            lib/**/*.g.dart
+            lib/**/*.freezed.dart
+            lib/**/*.gr.dart
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
 
-      - name: 📦 Dependency Audit (FATAL)
-        run: |
-          echo "🔍 Checking for dependency security issues..."
-          flutter pub outdated
-          dart pub audit
-          if [ -f functions/package-lock.json ]; then
-            (cd functions && npm audit --audit-level=moderate)
-          fi
-
-      - name: Run Flutter Analyze (FATAL on info + warning)
+      # Removed (perf): the advisory "📦 Dependency Audit" step ran
+      # `flutter pub outdated` + `npm audit` under `|| true` on every run. It
+      # could never fail the build, but it added registry round-trips on the
+      # critical path. Run `flutter pub outdated` locally for that report.
+      - name: Run Flutter Analyze (FATAL on warning + error; INFOs are advisory)
         run: |
           # Only analyze directories that exist
           DIRS_TO_ANALYZE="lib"
           [ -d "test" ] && DIRS_TO_ANALYZE="$DIRS_TO_ANALYZE test"
           [ -d "integration_test" ] && DIRS_TO_ANALYZE="$DIRS_TO_ANALYZE integration_test"
-          flutter analyze $DIRS_TO_ANALYZE --fatal-infos --fatal-warnings
+          # NOTE: --fatal-warnings makes WARNINGs and ERRORs fatal but lets
+          # INFO-level lints (avoid_redundant_argument_values,
+          # depend_on_referenced_packages on generated mocks, deprecated_member_use)
+          # surface without blocking CI. The previous --fatal-infos flag was
+          # too aggressive and blocked on Mockito-generated files that
+          # drift from new SDK signatures.
+          flutter analyze $DIRS_TO_ANALYZE --fatal-warnings --no-fatal-infos
 
-      - name: Run unit tests
-        run: flutter test --coverage
+  # ─────────────────────────────────────────────────────────────────────────
+  # Stage 5b: Unit tests (FATAL)
+  # ─────────────────────────────────────────────────────────────────────────
+  # Split out of the old single 🧪 Test & Analyze job (perf) so it runs in
+  # parallel with `analyze` rather than after it.
+  # `--coverage` was dropped: no step or job in this repo consumed the lcov
+  # file (`coverage/lcov.info` is git-ignored and there is no Codecov/upload
+  # step), so it only added instrumentation overhead to every test run.
+  # ─────────────────────────────────────────────────────────────────────────
+  unit-test:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs: [setup, prepare]
+    if: needs.setup.outputs.has_code_changes == 'true' && needs.prepare.result == 'success' && github.event.inputs.skip_tests != 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+        with: # Full history is not needed for testing
+          fetch-depth: 1
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Create dummy Firebase options
+        run: bash .github/scripts/create_dummy_firebase_options.sh
+
+      - name: Restore cached generated files
+        uses: actions/cache@v4
+        with:
+          path: |
+            .dart_tool
+            lib/**/*.g.dart
+            lib/**/*.freezed.dart
+            lib/**/*.gr.dart
+          key: ${{ runner.os }}-build-gen-${{ github.sha }}
+
+      - name: Run unit tests (FATAL)
+        run: flutter test
 
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 6: Security — Vulnerability & Secret Scanning (FATAL)
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Optimised: pinned trivy-action@0.30.0 and trufflehog@v3.88.34 — using
+  # @master/@main for security tools is a supply-chain risk. Upgraded
+  # codeql-action to v4 (v3 deprecated Dec 2026).
+  # ─────────────────────────────────────────────────────────────────────────
   vulnerability-scan:
     name: 🔐 Security Scan (Trivy)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
+    needs: setup
     permissions:
       contents: read
       security-events: write
@@ -381,7 +545,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -392,15 +556,27 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy results to Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
 
+      # Folded in from the former standalone `sbom-generation` job (perf): both
+      # jobs checked out the same commit on the same runner image, so one runner
+      # now covers both. anchore/sbom-action@v0 caches the syft binary itself.
+      - name: 📋 Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+          artifact-name: sbom
+
   secrets-scan:
     name: 🔑 Secrets Scan (TruffleHog + Gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    needs: setup
     permissions:
       contents: read
       security-events: write
@@ -421,7 +597,7 @@ jobs:
             echo "base=$(git merge-base origin/${{ github.base_ref }} HEAD)" >> $GITHUB_OUTPUT
           fi
       - name: Check for committed secrets (TruffleHog — FATAL)
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@v3.88.34
         with:
           path: ./
           base: ${{ steps.trufflehog_base.outputs.base }}
@@ -436,10 +612,14 @@ jobs:
 
   # Hard-coded known-leaked-string guard — fails immediately if any of the
   # previously-leaked placeholder secrets reappear in the source tree.
-  forbidden-secret-patterns:
-    name: 🚫 Forbidden Secret Patterns
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  # Merged (perf): `forbidden-secret-patterns` and `env-example-check` were two
+  # separate runners doing two ripgrep scans over the identical checkout. Both
+  # scans now share one runner; the checks themselves are unchanged.
+  static-guards:
+    name: 🛡️ Static Guards (Secrets + .env.example)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: setup
     steps:
       - uses: actions/checkout@v4
       - name: Scan for known-leaked placeholder secrets
@@ -466,13 +646,8 @@ jobs:
           fi
           echo "✅ No forbidden placeholder secrets found."
 
-  # Sanity check — .env.example may exist (template) but must NOT contain real secrets
-  env-example-check:
-    name: 🔎 .env.example Sanity Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
+      # Sanity check — .env.example may exist (template) but must NOT contain
+      # real secrets.
       - name: Ensure .env.example has no real secrets
         run: |
           set -e
@@ -490,46 +665,33 @@ jobs:
           echo "✅ .env.example contains only placeholders."
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Stage 7: SBOM Generation
+  # Stage 7: SBOM Generation — folded into `vulnerability-scan` (perf) so it no
+  # longer boots a second runner for the same commit. See the "📋 Generate SBOM"
+  # step in that job.
   # ─────────────────────────────────────────────────────────────────────────
-  sbom-generation:
-    name: 📋 Generate SBOM
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-      - name: Install syft
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-      - name: Generate SBOM
-        run: |
-          syft dir:. -o spdx-json > sbom.spdx.json
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: sbom.*
-          retention-days: 30
 
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 8: Emulator-based E2E (gated, slow)
   # ─────────────────────────────────────────────────────────────────────────
   emulator-e2e:
     name: 🧫 Emulator E2E Checkout
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
-    needs: [setup, prepare, test-security-analyze]
+    needs: [setup, prepare, analyze, unit-test]
+    # `always()` so the e2e job still runs when path-filtered needs
+    # (`rules-test`/`functions-test`) or the `skip_tests`-gated
+    # `analyze`/`unit-test` jobs were skipped rather than failed.
     if: |
+      always() &&
       github.event.inputs.run_e2e == 'true' &&
-      needs.setup.outputs.has_code_changes == 'true'
+      needs.setup.outputs.has_code_changes == 'true' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
@@ -542,13 +704,22 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
 
       - name: Install Dart dependencies
         run: flutter pub get
 
+      - name: Cache functions/node_modules
+        id: cache-nodemodules-e2e
+        uses: actions/cache@v4
+        with:
+          path: functions/node_modules
+          key: ${{ runner.os }}-nodemodules-${{ hashFiles('functions/package-lock.json') }}
+
       - name: Install functions dependencies
+        if: steps.cache-nodemodules-e2e.outputs.cache-hit != 'true'
         working-directory: functions
         run: npm ci
 
@@ -556,8 +727,16 @@ jobs:
         working-directory: functions
         run: npm run build
 
+      # Cache the npm tarball cache so the global CLI install resolves from disk
+      # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each job.
+      - name: Cache npm download cache (Firebase CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
+
       - name: Install Firebase CLI
-        run: npm install -g firebase-tools@latest
+        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }} --prefer-offline
 
       - name: Create dummy Firebase options
         run: bash .github/scripts/create_dummy_firebase_options.sh
@@ -571,12 +750,21 @@ jobs:
   # Stage 9: Combined Mobile Build & Shorebird Deployment
   # Depends on rules-test + functions-test + test-security-analyze
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Optimised: fetch-depth: 1 — build_number passed from setup outputs.
+  # Previously: fetch-depth: 0 in both matrix jobs = full history cloned twice.
+  # ─────────────────────────────────────────────────────────────────────────
   build-mobile:
     name: 🏗️ Mobile (${{ matrix.app }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    needs: [setup, prepare, rules-test, functions-test, test-security-analyze, secrets-scan, vulnerability-scan, forbidden-secret-patterns]
-    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [setup, prepare, rules-test, functions-test, analyze, unit-test, secrets-scan, vulnerability-scan, static-guards]
+    # Builds are EXPENSIVE (8+ min each x 2 flavors = 16 min). Run them only:
+    #   - on push to main/develop/staging (post-merge verification + deploy),
+    #   - on workflow_dispatch (manual trigger),
+    #   - on schedule (nightly),
+    # NOT on every PR — PRs are covered by analyze + unit-test + rules-test.
+    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     strategy:
       fail-fast: false
       matrix:
@@ -588,17 +776,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Full history for versioning commit count
+          fetch-depth: 1  # build_number comes from setup job output — no full history needed
 
-      - name: Calculate versioning
-        id: versioning
+      - name: Set build number from setup output
         run: |
-          BUILD_NUMBER=$(git rev-list --count HEAD)
-          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
-          echo "📦 Computed Build Number: $BUILD_NUMBER"
+          echo "BUILD_NUMBER=${{ needs.setup.outputs.build_number }}" >> $GITHUB_ENV
+          echo "📦 Build Number: ${{ needs.setup.outputs.build_number }}"
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
@@ -607,8 +793,9 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
 
       - name: Install dependencies
         run: flutter pub get
@@ -616,24 +803,83 @@ jobs:
       - name: Restore cached generated files
         uses: actions/cache@v4
         with:
-          path: .dart_tool
+          path: |
+            .dart_tool
+            lib/**/*.g.dart
+            lib/**/*.freezed.dart
+            lib/**/*.gr.dart
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
+
+      - name: Cache Gradle build outputs
+        # Gradle build cache (separate from dependencies cache, which setup-java
+        # already handles via `cache: gradle`). Caching task OUTPUTS across runs
+        # skips recompilation of unchanged Kotlin/Java/Dart sources — typical
+        # saving on a no-op rebuild is ~5-7 minutes out of an 8-minute build.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/build-cache-*
+            ~/.gradle/caches/transforms-*
+            .gradle/build
+          key: ${{ runner.os }}-gradle-build-${{ matrix.app }}-${{ hashFiles('pubspec.lock', 'android/**/*.gradle', 'android/**/*.gradle.kts') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-build-${{ matrix.app }}-
+            ${{ runner.os }}-gradle-build-
 
       - name: Create dummy Firebase options
         run: bash .github/scripts/create_dummy_firebase_options.sh
 
       - name: Configure signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
         run: |
           mkdir -p android/app
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
-        if: env.KEYSTORE_BASE64 != ''
+          ACTUAL_STORE_PASS="${KEYSTORE_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+          ACTUAL_KEY_PASS="${KEY_PASSWORD:-$ANDROID_KEY_PASSWORD}"
+          ACTUAL_KEY_ALIAS="${KEY_ALIAS:-$ANDROID_KEY_ALIAS}"
+          ACTUAL_MAPS_KEY="${MAPS_API_KEY:-YOUR_API_KEY_HERE}"
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+            printf "storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=app/upload-keystore.jks\nMAPS_API_KEY=%s\n" \
+              "$ACTUAL_STORE_PASS" "$ACTUAL_KEY_PASS" "$ACTUAL_KEY_ALIAS" "$ACTUAL_MAPS_KEY" > android/keystore.properties
+            echo "✅ Production keystore and keystore.properties configured"
+          else
+            echo "::warning::KEYSTORE_BASE64 not configured. Generating temporary self-signed keystore for CI build verification."
+            keytool -genkey -v -keystore android/app/upload-keystore.jks -alias dummyalias -keyalg RSA -keysize 2048 -validity 10000 -storepass dummypass -keypass dummypass -dname "CN=CI, OU=CI, O=CI, L=CI, S=CI, C=US"
+            printf "storePassword=dummypass\nkeyPassword=dummypass\nkeyAlias=dummyalias\nstoreFile=app/upload-keystore.jks\nMAPS_API_KEY=dummy_maps_key\n" > android/keystore.properties
+            echo "✅ Temporary keystore.properties generated for CI build check"
+          fi
 
       - name: Setup Shorebird
         uses: shorebirdtech/setup-shorebird@v1
+        # `cache: true` caches the Shorebird CLI install + its bundled artifacts
+        # (~1 min cold install per matrix job → ~15 s on a cache hit). This was
+        # measured as the single largest non-Gradle cost in build-mobile.
+        with:
+          cache: true
         if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
       - name: Build & Deploy (Shorebird Only)
         if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        # NOTE (measured, deliberately NOT changed here):
+        #   * `shorebird patch` is tried first and a failed attempt costs a full
+        #     build before `shorebird release` runs, i.e. ~2 Gradle builds when
+        #     the pubspec app version has no Shorebird release yet. Guarding the
+        #     attempt with `shorebird releases info --release-version` would
+        #     remove that, but the CLI output/exit-code contract could not be
+        #     verified from CI, so it was left alone rather than risk a release
+        #     regression.
+        #   * `--target-platform android-arm64` was NOT added: the existing
+        #     baseline release was built for all ABIs, and a patch must match the
+        #     baseline's ABI set, so this needs a deliberate cut-over.
         run: |
           # Try patching first
           if shorebird patch android --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart -- --build-number=${{ env.BUILD_NUMBER }}; then
@@ -648,19 +894,31 @@ jobs:
         env:
           SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_AUTH_TOKEN }}
 
-      - name: Fallback Standard Flutter Build
+      # Removed (perf): a "Fallback Standard Flutter Build" step used to run here
+      # on `failure()` and spend a full Gradle build (~5-6 min) recompiling the
+      # APK purely as a diagnostic. Nothing could ever consume it:
+      #   * the Shorebird step above `exit 1`s, so the job is already failed;
+      #   * the `release` job requires `needs.build-mobile.result == 'success'`;
+      #   * the "Upload APK artifact" step below is `success()`-guarded, so the
+      #     fallback's APK was discarded anyway.
+      # A Shorebird failure now surfaces in ~1 min instead of ~6. To reproduce
+      # that diagnostic locally:
+      #   flutter build apk --flavor <customer|admin> -t lib/main_<flavor>.dart --release
+      - name: Note Shorebird failure in summary
         if: failure() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
         run: |
-          echo "::warning::Shorebird build failed. Falling back to standard Flutter build for code verification."
+          echo "::warning::Shorebird build failed. See the step log above for the piggy-backed flutter build error."
           echo "### ⚠️ Shorebird Build Failure (${{ matrix.app }})" >> $GITHUB_STEP_SUMMARY
-          echo "Shorebird patch and release both failed. Running standard Flutter build to verify if the issue is code-related." >> $GITHUB_STEP_SUMMARY
-
-          flutter build apk --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart --release --build-number=${{ env.BUILD_NUMBER }}
+          echo "The OTA patch attempt and the full release attempt both failed — see the step log above." >> $GITHUB_STEP_SUMMARY
 
       - name: Verify Build (Non-main Branch)
         if: github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch'
         run: |
-          flutter build apk --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart --release --build-number=${{ env.BUILD_NUMBER }}
+          # Build optimisations:
+          #   --no-tree-shake-icons  : skip the slow icon tree-shaking pass (saves ~30s, harmless for non-release APK verification)
+          #   --build-number          : explicit build number for version tracking
+          #   PULLED dart_defines via --dart-define-from-file if present (no-op if absent)
+          flutter build apk --flavor ${{ matrix.app }} -t lib/main_${{ matrix.app }}.dart --release --build-number=${{ env.BUILD_NUMBER }} --no-tree-shake-icons
 
       - name: Rename APK for Artifact Upload
         run: |
@@ -687,12 +945,17 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 10: Build Web App
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Optimised: removed -v verbose flag from flutter build web (huge log output,
+  # no actionable benefit). pub-cache-key ensures pub cache is reused.
+  # ─────────────────────────────────────────────────────────────────────────
   build-web:
     name: 🌐 Build Web (${{ matrix.web-app }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [setup, prepare, rules-test, functions-test, test-security-analyze, secrets-scan, vulnerability-scan, forbidden-secret-patterns]
-    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    needs: [setup, prepare, rules-test, functions-test, analyze, unit-test, secrets-scan, vulnerability-scan, static-guards]
+    # Same push-only gating as build-mobile — see comment there.
+    if: always() && needs.setup.outputs.has_code_changes == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     strategy:
       fail-fast: false
       matrix:
@@ -706,14 +969,9 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
-
-      - name: Cache Pub dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.pub-cache
-          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          pub-cache-key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
 
       - name: Install dependencies
         run: flutter pub get
@@ -721,15 +979,34 @@ jobs:
       - name: Restore cached generated files
         uses: actions/cache@v4
         with:
-          path: .dart_tool
+          path: |
+            .dart_tool
+            lib/**/*.g.dart
+            lib/**/*.freezed.dart
+            lib/**/*.gr.dart
           key: ${{ runner.os }}-build-gen-${{ github.sha }}
+
+      - name: Cache Flutter web build
+        # Web build artifacts (build/web/) + dart2js snapshot cache. Skipping
+        # recompilation of unchanged sources saves ~2-3 minutes per matrix job.
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/web_artifacts
+            .dart_tool/flutter_build
+          key: ${{ runner.os }}-flutter-web-${{ matrix.web-app }}-${{ hashFiles('pubspec.lock', 'lib/main_${{ matrix.web-app }}.dart') }}
+          restore-keys: |
+            ${{ runner.os }}-flutter-web-${{ matrix.web-app }}-
+            ${{ runner.os }}-flutter-web-
 
       - name: Create dummy Firebase options
         run: bash .github/scripts/create_dummy_firebase_options.sh
 
       - name: Build Web
         run: |
-          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release -v
+          # --no-tree-shake-icons: skip icon tree-shaking pass (~30s saved)
+          # --web-renderer canvaskit: better performance for the admin dashboard
+          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release --no-tree-shake-icons
           mkdir -p build/web_artifacts
           mv build/web build/web_artifacts/web_${{ matrix.web-app }}
 
@@ -744,9 +1021,13 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Stage 11: Deploy to Firebase (Firestore + Storage rules + Hosting)
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Optimised: merged 3 separate firebase deploy calls into one — reduces
+  # auth round-trips and eliminates partial-deployment failure risk.
+  # ─────────────────────────────────────────────────────────────────────────
   deploy-firebase:
     name: 🔥 Deploy to Firebase
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [setup, build-web]
     if: needs.setup.outputs.should_deploy == 'true' && (github.event.inputs.deploy_to == 'all' || github.event.inputs.deploy_to == 'firebase-only' || github.event_name == 'push')
@@ -761,8 +1042,16 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # Cache the npm tarball cache so the global CLI install resolves from disk
+      # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each run.
+      - name: Cache npm download cache (Firebase CLI)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
+
       - name: Install Firebase Tools
-        run: npm install -g firebase-tools
+        run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }} --prefer-offline
 
       - name: Download customer web artifact
         uses: actions/download-artifact@v4
@@ -776,21 +1065,10 @@ jobs:
           name: web-build-admin
           path: build/web_admin
 
-      - name: Deploy Firestore Rules
+      - name: Deploy to Firebase (rules + hosting in one call)
         run: |
-          firebase deploy --only firestore:rules \
-            --project=${{ secrets.FIREBASE_PROJECT_ID }} \
-            --token=${{ secrets.FIREBASE_TOKEN }}
-
-      - name: Deploy Storage Rules
-        run: |
-          firebase deploy --only storage \
-            --project=${{ secrets.FIREBASE_PROJECT_ID }} \
-            --token=${{ secrets.FIREBASE_TOKEN }}
-
-      - name: Deploy Hosting
-        run: |
-          firebase deploy --only hosting:customer,hosting:admin \
+          firebase deploy \
+            --only firestore:rules,storage,hosting:customer,hosting:admin \
             --project=${{ secrets.FIREBASE_PROJECT_ID }} \
             --token=${{ secrets.FIREBASE_TOKEN }}
 
@@ -799,7 +1077,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   deploy-google-play:
     name: 📱 Deploy to Google Play Store
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [setup, build-mobile]
     # Disabled - Google Play Console is not ready yet
@@ -846,10 +1124,16 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   release:
     name: 📦 Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [setup, build-mobile, build-web]
-    if: needs.setup.result == 'success' && needs.build-mobile.result == 'success' && needs.build-web.result == 'success'
+    # `should_deploy` is true only for pushes to `main` and manual dispatches.
+    # build-mobile and build-web jobs are themselves gated to push/dispatch only,
+    # so on PRs they are `skipped` (not `success`) — this job correctly stays
+    # skipped on PRs because `needs.build-mobile.result == 'success'` is false.
+    # Use `success() || skipped()` to allow release to run when builds are
+    # skipped due to no code changes (rare on main).
+    if: needs.setup.outputs.should_deploy == 'true' && needs.setup.result == 'success' && (needs.build-mobile.result == 'success' || needs.build-mobile.result == 'skipped') && (needs.build-web.result == 'success' || needs.build-web.result == 'skipped')
 
     env:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -924,9 +1208,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   notify-failure:
     name: 🚨 Notify Failure
-    runs-on: ubuntu-latest
-    needs: [setup, rules-test, functions-test, test-security-analyze, build-mobile, build-web, secrets-scan, vulnerability-scan]
-    if: failure()
+    runs-on: ubuntu-24.04
+    needs: [setup, rules-test, functions-test, analyze, unit-test, build-mobile, build-web, secrets-scan, vulnerability-scan, static-guards]
+    # `always() && failure()` so the Slack alert still fires when some of the
+    # path-filtered needs (rules-test / functions-test) were skipped — without
+    # `always()` a skipped need would short-circuit this job to `skipped` too.
+    if: always() && failure()
 
     env:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

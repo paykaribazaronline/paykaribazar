@@ -3,7 +3,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../../core/constants/paths.dart';
 import '../../../core/services/cloud_functions_client.dart';
-import '../../../features/checkout/models/pricing_snapshot.dart';
 import '../../../features/payments/models/payment_method.dart';
 import '../../../models/order_model.dart';
 

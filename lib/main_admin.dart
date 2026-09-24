@@ -15,7 +15,6 @@ import 'src/utils/globals.dart';
 import 'src/utils/update_dialog.dart';
 import 'src/di/providers.dart';
 import 'src/di/service_initializer.dart';
-import 'src/services/database_seeder.dart'; // Import Seeder
 
 void main() {
   runZonedGuarded(() async {

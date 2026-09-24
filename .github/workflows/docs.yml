@@ -40,7 +40,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.0'
+          # Flutter 3.35.0 ships Dart 3.9 — required by shared_preferences ^2.5.5
+          channel: stable
           cache: true
 
       # ── Generate Release Notes ─────────────────────────────────────────

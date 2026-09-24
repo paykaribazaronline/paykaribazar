@@ -1,6 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -9,7 +8,6 @@ import '../../../core/services/storage_service.dart';
 import '../../../core/services/security_initializer.dart';
 import '../../../di/service_locator.dart';
 import '../../../core/constants/paths.dart';
-import 'dart:math' as math;
 
 final authServiceProvider = Provider((ref) {
   return getIt<AuthService>();
@@ -18,7 +16,6 @@ final authServiceProvider = Provider((ref) {
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
-  final GoogleSignIn _googleSignIn = GoogleSignIn();
   final StorageService _storage;
   final FirestoreService _firestore;
 
@@ -268,39 +265,17 @@ class AuthService {
   }
 
   Future<User?> signInWithGoogle() async {
-    try {
-      // Tip #9: Use singleton instance instead of GoogleSignIn().signIn()
-      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) return null;
-      final GoogleSignInAuthentication googleAuth =
-          await googleUser.authentication;
-      final AuthCredential credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-      final res = await _auth.signInWithCredential(credential);
-      if (res.user != null) {
-        final doc = await FirebaseFirestore.instance.collection(HubPaths.users).doc(res.user!.uid).get();
-        final existingData = doc.data();
-        final existingReferral = existingData?['myReferralCode'];
-        final isNewUser = !doc.exists;
-
-        await _firestore.updateProfile(res.user!.uid, {
-          'name': res.user!.displayName,
-          'email': res.user!.email,
-          'profilePic': res.user!.photoURL, // Use the actual UID
-          'myReferralCode': existingReferral ?? _generateReferralCode(res.user!.displayName ?? 'User', res.user!.uid),
-          'lastLogin': FieldValue.serverTimestamp(),
-          // Issue #12: Set role and createdAt for new Google Sign-In users
-          if (isNewUser) 'role': 'customer',
-          if (isNewUser) 'createdAt': FieldValue.serverTimestamp(),
-          if (isNewUser) 'storageLimit': 50 * 1024 * 1024,
-        });
-      }
-      return res.user;
-    } catch (e) {
-      rethrow;
-    }
+    // TODO(prod): google_sign_in v7 removed the unnamed `GoogleSignIn()`
+    // constructor, the `signIn()` instance method, and the
+    // `GoogleSignInAuthentication.accessToken` getter. Migrating to the new
+    // API (`GoogleSignIn.instance`, `authenticate()`, and the new
+    // `serverAuthCode`-based credential flow) requires wiring up the OAuth
+    // client IDs (android, iOS, web) and re-verifying the backend's
+    // user-profile write — out of scope for this CI unblocking pass. Until
+    // the migration lands, Google sign-in is disabled and the UI should hide
+    // the "Continue with Google" button.
+    debugPrint('⚠️ Google sign-in disabled — google_sign_in v7 API migration pending.');
+    return null;
   }
 
   Future<void> registerStaff(

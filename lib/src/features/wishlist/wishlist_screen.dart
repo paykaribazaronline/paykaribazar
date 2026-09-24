@@ -4,6 +4,7 @@ import '../../di/providers.dart';
 import '../../utils/styles.dart';
 import '../../models/product_model.dart';
 import '../home/widgets/home_widgets.dart';
+import 'providers/wishlist_provider.dart';
 
 class WishlistScreen extends ConsumerWidget {
   const WishlistScreen({super.key});

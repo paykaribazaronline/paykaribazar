@@ -1,12 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import '../../../di/service_locator.dart';
 import '../../../core/services/secrets_service.dart';
 import 'ai_service.dart';
-import 'gemini_provider.dart';
 import 'api_quota_service.dart';
 import '../../../core/constants/paths.dart';
 
@@ -171,7 +169,7 @@ class AiAutomationService {
 
     if (gemini != null) {
       final Uint8List bytes = imageBytes is Uint8List
-          ? imageBytes as Uint8List
+          ? imageBytes
           : Uint8List.fromList(imageBytes);
       final result = await gemini.generateMultimodal(prompt, bytes, 'image/jpeg');
       if (result.isNotEmpty) return result;

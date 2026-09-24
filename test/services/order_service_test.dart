@@ -1,14 +1,27 @@
+import 'package:cloud_firestore/cloud_firestore.dart' hide Order;
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:paykari_bazar/src/core/services/cloud_functions_client.dart';
 import 'package:paykari_bazar/src/features/commerce/services/order_service.dart';
-import 'package:paykari_bazar/src/models/order_model.dart';
+import 'package:paykari_bazar/src/features/payments/models/payment_method.dart';
+import 'package:paykari_bazar/src/models/order_model.dart' as app_models;
 
 class MockOrderService extends Mock implements OrderService {}
-class FakeOrder extends Fake implements Order {}
+class FakeOrder extends Fake implements app_models.Order {}
+
+// Lightweight mocks for the OrderService constructor dependencies — used by
+// the real-OrderService smoke test below. The Mock* types only need to
+// implement the surface that OrderService touches (currentUser for the
+// unauthenticated guard).
+class _MockFirebaseAuth extends Mock implements FirebaseAuth {}
+class _MockCloudFunctionsClient extends Mock implements CloudFunctionsClient {}
+class _MockFirebaseFirestore extends Mock implements FirebaseFirestore {}
 
 void main() {
   setUpAll(() {
     registerFallbackValue(FakeOrder());
+    registerFallbackValue(PaymentMethod.cod);
   });
 
   group('OrderService Tests', () {
@@ -18,27 +31,34 @@ void main() {
       orderService = MockOrderService();
     });
 
-    test('Place new order with deliveryFee and discount', () async {
+    // ---------------------------------------------------------------------------
+    // placeOrder — the OLD signature (total / address / customerName /
+    // customerPhone / deliveryFee / discount) was replaced in the
+    // production-hardening patch with a backend-enforced signature that
+    // accepts `items: List<CartItemRequest>`, `addressId`, `couponCode?`,
+    // `businessId?`, `paymentMethod: PaymentMethod`, `note?`. The stubbed
+    // MockOrderService test below uses the new signature. See the
+    // `OrderService.placeOrder (real-instance smoke tests)` group for an
+    // integration-style test that exercises the real code path (and proves
+    // the unauthenticated guard still throws StateError).
+    // ---------------------------------------------------------------------------
+    test('placeOrder returns orderId (mocked with new signature)', () async {
       when(() => orderService.placeOrder(
-        items: any<List<Map<String, dynamic>>>(named: 'items'),
-        total: any<double>(named: 'total'),
-        address: any<String>(named: 'address'),
-        paymentMethod: any<String>(named: 'paymentMethod'),
-        customerName: any<String>(named: 'customerName'),
-        customerPhone: any<String>(named: 'customerPhone'),
-        deliveryFee: any<double>(named: 'deliveryFee'),
-        discount: any<double>(named: 'discount'),
-      )).thenAnswer((_) async => 'order456');
+            items: any(named: 'items'),
+            addressId: any(named: 'addressId'),
+            paymentMethod: any(named: 'paymentMethod'),
+            couponCode: any(named: 'couponCode'),
+            businessId: any(named: 'businessId'),
+            note: any(named: 'note'),
+          )).thenAnswer((_) async => 'order456');
 
       final result = await orderService.placeOrder(
-        items: [],
-        total: 1100.0,
-        address: '456 Avenue',
-        paymentMethod: 'card',
-        customerName: 'Jane Doe',
-        customerPhone: '01711111111',
-        deliveryFee: 60.0,
-        discount: 20.0,
+        items: const [CartItemRequest(productId: 'P1', quantity: 2)],
+        addressId: 'addr-1',
+        paymentMethod: PaymentMethod.bkash,
+        couponCode: null,
+        businessId: null,
+        note: null,
       );
 
       expect(result, 'order456');
@@ -70,7 +90,7 @@ void main() {
     });
 
     test('Create order from model', () async {
-      final order = Order(
+      final order = app_models.Order(
         id: 'order-model-1',
         customerUid: 'user1',
         customerName: 'Test',
@@ -85,7 +105,7 @@ void main() {
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
-      when(() => orderService.createOrder(any<Order>()))
+      when(() => orderService.createOrder(any<app_models.Order>()))
           .thenAnswer((_) async => 'order-model-1');
 
       final result = await orderService.createOrder(order);
@@ -93,7 +113,7 @@ void main() {
     });
 
     test('Update order', () async {
-      final order = Order(
+      final order = app_models.Order(
         id: 'order-update-1',
         customerUid: 'user1',
         customerName: 'Test',
@@ -105,15 +125,15 @@ void main() {
         total: 110.0,
         address: 'Addr',
         paymentMethod: 'COD',
-        status: OrderStatus.confirmed,
+        status: app_models.OrderStatus.confirmed,
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
-      when(() => orderService.updateOrder(any<Order>()))
+      when(() => orderService.updateOrder(any<app_models.Order>()))
           .thenAnswer((_) async => Future.value());
 
       await orderService.updateOrder(order);
-      verify(() => orderService.updateOrder(any<Order>())).called(1);
+      verify(() => orderService.updateOrder(any<app_models.Order>())).called(1);
     });
 
     test('Assign order to rider', () async {
@@ -125,15 +145,15 @@ void main() {
     });
 
     test('Cancel order with null reason', () async {
-      when(() => orderService.cancelOrder('order123', any<String?>()))
+      when(() => orderService.cancelOrder('order123', reason: any(named: 'reason')))
           .thenAnswer((_) async => Future.value());
 
-      await orderService.cancelOrder('order123', null);
-      verify(() => orderService.cancelOrder('order123', null)).called(1);
+      await orderService.cancelOrder('order123', reason: null);
+      verify(() => orderService.cancelOrder('order123', reason: null)).called(1);
     });
 
     test('Get order by ID', () async {
-      final mockOrder = Order(
+      final mockOrder = app_models.Order(
         id: 'order123',
         customerUid: 'user1',
         customerName: 'Test User',
@@ -151,26 +171,89 @@ void main() {
 
       when(() => orderService.getOrderById('order123'))
           .thenAnswer((_) async => mockOrder);
-      
+
       final result = await orderService.getOrderById('order123');
       expect(result?.id, 'order123');
-      expect(result?.status, OrderStatus.pending);
+      expect(result?.status, app_models.OrderStatus.pending);
     });
 
     test('Update order status', () async {
       when(() => orderService.updateOrderStatus('order123', 'shipped'))
           .thenAnswer((_) async => Future.value());
-      
+
       await orderService.updateOrderStatus('order123', 'shipped');
-      verify(() => orderService.updateOrderStatus('order123', 'shipped')).called(1);
+      verify(() => orderService.updateOrderStatus('order123', 'shipped'))
+          .called(1);
     });
 
     test('Cancel order', () async {
-      when(() => orderService.cancelOrder('order123', any<String?>()))
+      when(() => orderService.cancelOrder('order123', reason: any(named: 'reason')))
           .thenAnswer((_) async => Future.value());
-      
-      await orderService.cancelOrder('order123', 'Change of mind');
-      verify(() => orderService.cancelOrder('order123', 'Change of mind')).called(1);
+
+      await orderService.cancelOrder('order123', reason: 'Change of mind');
+      verify(() => orderService.cancelOrder('order123', reason: 'Change of mind'))
+          .called(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Real-OrderService smoke tests. The new `placeOrder` flow routes through
+  // Cloud Functions (`calcOrder` → `reserveStock` → `createOrder`) which
+  // cannot be exercised in unit tests without a full CloudFunctionsClient
+  // mock wiring. These smoke tests cover the constructor and the
+  // unauthenticated guard — both of which run without touching Cloud
+  // Functions.
+  //
+  // TODO(rest_of_tests): rewrite with full mock of CloudFunctionsClient
+  // (stub `calcOrder` → canned `PricingSnapshot`, `reserveStock` → canned
+  // `ReservationResult`, `createOrder` → canned orderId) to exercise the
+  // happy-path three-call orchestration end-to-end.
+  // ---------------------------------------------------------------------------
+  group('OrderService.placeOrder (real-instance smoke tests)', () {
+    late _MockFirebaseAuth mockAuth;
+    late _MockCloudFunctionsClient mockCf;
+    late _MockFirebaseFirestore mockFirestore;
+
+    setUp(() {
+      mockAuth = _MockFirebaseAuth();
+      mockCf = _MockCloudFunctionsClient();
+      mockFirestore = _MockFirebaseFirestore();
+    });
+
+    test('can be constructed with mock dependencies', () {
+      expect(
+        () => OrderService(
+          cf: mockCf,
+          firestore: mockFirestore,
+          auth: mockAuth,
+        ),
+        returnsNormally,
+      );
+    });
+
+    test('throws StateError when no user is authenticated', () async {
+      // `FirebaseAuth.currentUser` defaults to null on a fresh mock — but
+      // explicit stub makes the test resilient to mocktail's
+      // `MissingStubError` behaviour on unstubbed getters.
+      when(() => mockAuth.currentUser).thenReturn(null);
+
+      final svc = OrderService(
+        cf: mockCf,
+        firestore: mockFirestore,
+        auth: mockAuth,
+      );
+
+      expect(
+        () => svc.placeOrder(
+          items: const [CartItemRequest(productId: 'P1', quantity: 1)],
+          addressId: 'addr-1',
+          paymentMethod: PaymentMethod.cod,
+          couponCode: null,
+          businessId: null,
+          note: null,
+        ),
+        throwsA(isA<StateError>()),
+      );
     });
   });
 }

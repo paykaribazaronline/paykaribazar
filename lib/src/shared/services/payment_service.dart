@@ -1,7 +1,6 @@
 import '../../core/services/cloud_functions_client.dart';
 import '../../features/payments/models/payment_init.dart';
 import '../../features/payments/models/payment_method.dart';
-import '../../features/payments/models/payment_result.dart';
 
 /// Abstract payment service surface. The legacy abstract class returned
 /// `Future<bool>` from `initiateBkash/initiateNagad` and unconditionally

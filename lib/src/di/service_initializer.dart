@@ -88,8 +88,8 @@ class ServiceInitializer {
     try {
       const isRelease = !kDebugMode && !kProfileMode;
       await FirebaseAppCheck.instance.activate(
-        providerAndroid: isRelease ? AndroidProvider.playIntegrity : AndroidProvider.debug,
-        providerApple: isRelease ? AppleProvider.deviceCheck : AppleProvider.debug,
+        androidProvider: isRelease ? AndroidProvider.playIntegrity : AndroidProvider.debug,
+        appleProvider: isRelease ? AppleProvider.deviceCheck : AppleProvider.debug,
       ).timeout(const Duration(seconds: 5));
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ App Check activation failed (non-fatal): $e');

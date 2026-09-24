@@ -15,8 +15,13 @@ def pubspecVersionCode = flutter.versionCode.toInteger()
 
 android {
     namespace "com.paykaribazar.app"
-    compileSdk 36 // Reverted to 36 as required by facebook_auth, photo_manager, and sentry_flutter plugins
-    ndkVersion = "28.2.13676358"
+    // CI runners ship Android Build Tools that match SDK 35; SDK 36 causes
+    // "Build Tools API Version Mismatch Detected" on ubuntu-24.04 GitHub
+    // Actions runners. Bump back to 36 ONLY after GitHub runners ship a
+    // matching build-tools release (track
+    // https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md).
+    compileSdk 35
+    ndkVersion = "27.2.12479018"
 
     compileOptions {
         coreLibraryDesugaringEnabled true
@@ -38,7 +43,7 @@ android {
     defaultConfig {
         // applicationId is defined dynamically in productFlavors
         minSdkVersion flutter.minSdkVersion // Updated to 23 as required by plugins (e.g., record_android, geolocator_android)
-        targetSdk 36 // Reverted to 36 as required by facebook_auth, photo_manager, and sentry_flutter plugins
+        targetSdk 35 // keep in sync with compileSdk above until CI runners support SDK 36
         versionCode pubspecVersionCode
         versionName pubspecVersionName
 
