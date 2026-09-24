@@ -30,13 +30,14 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  # Dart 3.9+ is required because shared_preferences ^2.5.5 (and several
-  # Firebase plugins transitive deps) declare `sdk: '>=3.9.0 <4.0.0'`.
-  # Flutter 3.35.0 ships Dart 3.9 — all CI workflows pin FLUTTER_VERSION=3.35.0
-  # to satisfy this. Bumping Flutter DOWN to 3.27/3.29 was the root cause of
-  # every recent `flutter pub get` failure in the rules-emulator-test and
-  # auto-build-and-deploy pipelines.
-  sdk: '>=3.9.0 <4.0.0'
+  # Dart 3.10+ is required because path_provider ^2.1.6 declares
+  # `sdk: '^3.10.0'` (and several Firebase plugin transitive deps now also
+  # require Dart 3.10+). All CI workflows use `channel: stable` on
+  # subosito/flutter-action to always pick up the latest stable Flutter,
+  # which provides Dart 3.10+. Pinning to a specific older Flutter version
+  # caused every recent `flutter pub get` failure in the rules-emulator-test
+  # and auto-build-and-deploy pipelines.
+  sdk: '>=3.10.0 <4.0.0'
 
 dependencies:
   flutter:

@@ -44,7 +44,7 @@ env:
   # Flutter 3.35.0 ships Dart 3.9 — required by shared_preferences ^2.5.5 and
   # other transitive deps. Older versions (3.27/3.29) caused `flutter pub get`
   # to fail with "version solving failed" in the rules-emulator-test job.
-  FLUTTER_VERSION: '3.35.0'
+  FLUTTER_VERSION: 'stable'  # channel: stable — always latest, provides Dart 3.10+
   JAVA_VERSION: '17'
   NODE_VERSION: '22'
 
@@ -80,7 +80,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Setup Node.js
@@ -230,7 +230,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Install Dart dependencies
@@ -301,7 +301,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
       - name: Install dependencies
         run: flutter pub get
@@ -334,7 +334,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Install dependencies
@@ -504,7 +504,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
       - name: Install syft
         run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
       - name: Generate SBOM
@@ -545,7 +545,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Install Dart dependencies
@@ -610,7 +610,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Install dependencies
@@ -709,7 +709,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Cache Pub dependencies
