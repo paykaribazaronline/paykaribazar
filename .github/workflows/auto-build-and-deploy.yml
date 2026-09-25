@@ -790,6 +790,14 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
+      - name: Install Android SDK 36 + build-tools
+        # CI runners ship platforms;android-36 but with an incompatible
+        # build-tools version, causing "Build Tools API Version Mismatch
+        # Detected". Explicitly install build-tools;36.0.0 to match.
+        run: |
+          yes | sdkmanager "build-tools;36.0.0" "platforms;android-36" >/dev/null 2>&1 || true
+          sdkmanager --list_installed | grep -E "build-tools|platforms;android-36" || true
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -1010,8 +1018,11 @@ jobs:
       - name: Build Web
         run: |
           # --no-tree-shake-icons: skip icon tree-shaking pass (~30s saved)
-          # --web-renderer canvaskit: better performance for the admin dashboard
-          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release --no-tree-shake-icons
+          # --base-href /: ensure Flutter's asset paths resolve correctly on
+          #   Firebase Hosting (the default $FLUTTER_BASE_HREF works too, but
+          #   being explicit avoids edge cases where the build environment
+          #   doesn't set the env var).
+          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release --no-tree-shake-icons --base-href "/"
           mkdir -p build/web_artifacts
           mv build/web build/web_artifacts/web_${{ matrix.web-app }}
 
@@ -1035,7 +1046,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [setup, build-web]
-    if: needs.setup.outputs.should_deploy == 'true' && (github.event.inputs.deploy_to == 'all' || github.event.inputs.deploy_to == 'firebase-only' || github.event_name == 'push')
+    # Deploy on push to main OR manual dispatch. Decoupled from build-mobile
+    # so web hosting deploy proceeds even if the mobile (Shorebird) build fails.
+    if: needs.setup.outputs.should_deploy == 'true' && needs.build-web.result == 'success'
 
     steps:
       - uses: actions/checkout@v5
