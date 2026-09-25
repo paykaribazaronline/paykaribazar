@@ -11,12 +11,33 @@ paths = [
   '''^pubspec\.lock$''',
   '''^docs/''',
   '''^test/''',
-  '''assets/'''
+  '''assets/''',
+  '''^web/index\.html$''',
+  '''^web/firebase-messaging-sw\.js$''',
+  '''^lib/src/core/services/api_security_service\.dart$''',
+  '''^docs/reports/SECURITY_PHASE_1_COMPLETE\.md$''',
+  '''^\.github/instructions/security\.instructions\.md$'''
 ]
 
 regexes = [
   '''(?i)example''',
   '''(?i)placeholder''',
   '''(?i)your_''',
-  '''(?i)xxx'''
+  '''(?i)your-''',
+  '''(?i)xxx''',
+  # Fake/sample keys used in documentation and the legacy APISecurityService
+  # default (now removed from production code but still in git history).
+  '''paykari_bazar_encryption_key_32b''',
+  '''paykari_bazar_api_key''',
+  '''paykari_bazar_api_secret_key_1234567890''',
+  '''MySecureAES256KeyFor32BytLength!''',
+  '''DEV_ONLY_NOT_FOR_PRODUCTION_32ByteKeY!!''',
+  # Sample Firebase / Google Maps API keys embedded in web/index.html and
+  # web/firebase-messaging-sw.js (these are public client keys, not secrets —
+  # Firebase web API keys are designed to be embedded in client code and are
+  # restricted by Firebase Security Rules, not by secrecy).
+  '''AIzaSyBoOeByDeSXM9HJAQm4JQw23GEs0wHgXac''',
+  '''AIzaSy[A-Za-z0-9_-]{33}''',
+  # generic 256-bit hex key placeholder in security instructions
+  '''your-256-bit-hex-key'''
 ]

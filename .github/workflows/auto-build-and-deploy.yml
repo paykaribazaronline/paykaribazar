@@ -267,7 +267,7 @@ jobs:
       # Cache the Firebase emulator jars (~40 MB) — keyed on workflow file
       # changes so a `firebase-tools@latest` bump still invalidates it.
       - name: Cache Firebase emulator binaries
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/firebase/emulators
           key: ${{ runner.os }}-emulators-${{ hashFiles('.github/workflows/*.yml') }}
@@ -277,7 +277,7 @@ jobs:
       # Cache the npm tarball cache so the global CLI install resolves from disk
       # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each job.
       - name: Cache npm download cache (Firebase CLI)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
@@ -336,7 +336,7 @@ jobs:
       # any dependency add/remove invalidates the cache.
       - name: Cache functions/node_modules
         id: cache-nodemodules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: functions/node_modules
           key: ${{ runner.os }}-nodemodules-${{ hashFiles('functions/package-lock.json') }}
@@ -399,7 +399,7 @@ jobs:
       - name: Generate code
         run: dart run build_runner build --delete-conflicting-outputs
       - name: Cache generated files
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .dart_tool
@@ -450,7 +450,7 @@ jobs:
         run: bash .github/scripts/create_dummy_firebase_options.sh
 
       - name: Restore cached generated files
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .dart_tool
@@ -512,7 +512,7 @@ jobs:
         run: bash .github/scripts/create_dummy_firebase_options.sh
 
       - name: Restore cached generated files
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .dart_tool
@@ -604,7 +604,7 @@ jobs:
           head: HEAD
           extra_args: --debug --only-verified
       - name: Gitleaks scan (FATAL)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: 'true'
@@ -713,7 +713,7 @@ jobs:
 
       - name: Cache functions/node_modules
         id: cache-nodemodules-e2e
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: functions/node_modules
           key: ${{ runner.os }}-nodemodules-${{ hashFiles('functions/package-lock.json') }}
@@ -730,7 +730,7 @@ jobs:
       # Cache the npm tarball cache so the global CLI install resolves from disk
       # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each job.
       - name: Cache npm download cache (Firebase CLI)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
@@ -790,6 +790,14 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
+      - name: Install Android SDK 36 + build-tools
+        # CI runners ship platforms;android-36 but with an incompatible
+        # build-tools version, causing "Build Tools API Version Mismatch
+        # Detected". Explicitly install build-tools;36.0.0 to match.
+        run: |
+          yes | sdkmanager "build-tools;36.0.0" "platforms;android-36" >/dev/null 2>&1 || true
+          sdkmanager --list_installed | grep -E "build-tools|platforms;android-36" || true
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -801,7 +809,7 @@ jobs:
         run: flutter pub get
 
       - name: Restore cached generated files
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .dart_tool
@@ -815,7 +823,7 @@ jobs:
         # already handles via `cache: gradle`). Caching task OUTPUTS across runs
         # skips recompilation of unchanged Kotlin/Java/Dart sources — typical
         # saving on a no-op rebuild is ~5-7 minutes out of an 8-minute build.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.gradle/caches/build-cache-*
@@ -940,7 +948,7 @@ jobs:
           fi
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.app }}-apk
           path: |
@@ -982,7 +990,7 @@ jobs:
         run: flutter pub get
 
       - name: Restore cached generated files
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .dart_tool
@@ -994,7 +1002,7 @@ jobs:
       - name: Cache Flutter web build
         # Web build artifacts (build/web/) + dart2js snapshot cache. Skipping
         # recompilation of unchanged sources saves ~2-3 minutes per matrix job.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             build/web_artifacts
@@ -1010,13 +1018,16 @@ jobs:
       - name: Build Web
         run: |
           # --no-tree-shake-icons: skip icon tree-shaking pass (~30s saved)
-          # --web-renderer canvaskit: better performance for the admin dashboard
-          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release --no-tree-shake-icons
+          # --base-href /: ensure Flutter's asset paths resolve correctly on
+          #   Firebase Hosting (the default $FLUTTER_BASE_HREF works too, but
+          #   being explicit avoids edge cases where the build environment
+          #   doesn't set the env var).
+          flutter build web -t lib/main_${{ matrix.web-app }}.dart --release --no-tree-shake-icons --base-href "/"
           mkdir -p build/web_artifacts
           mv build/web build/web_artifacts/web_${{ matrix.web-app }}
 
       - name: Upload web artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: web-build-${{ matrix.web-app }}
           path: |
@@ -1035,7 +1046,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [setup, build-web]
-    if: needs.setup.outputs.should_deploy == 'true' && (github.event.inputs.deploy_to == 'all' || github.event.inputs.deploy_to == 'firebase-only' || github.event_name == 'push')
+    # Deploy on push to main OR manual dispatch. Decoupled from build-mobile
+    # so web hosting deploy proceeds even if the mobile (Shorebird) build fails.
+    if: needs.setup.outputs.should_deploy == 'true' && needs.build-web.result == 'success'
 
     steps:
       - uses: actions/checkout@v5
@@ -1050,7 +1063,7 @@ jobs:
       # Cache the npm tarball cache so the global CLI install resolves from disk
       # (`--prefer-offline`) instead of re-downloading ~40 MB of deps each run.
       - name: Cache npm download cache (Firebase CLI)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-firebase-tools-${{ env.FIREBASE_TOOLS_VERSION }}-${{ hashFiles('.github/workflows/auto-build-and-deploy.yml') }}
@@ -1059,13 +1072,13 @@ jobs:
         run: npm install -g firebase-tools@${{ env.FIREBASE_TOOLS_VERSION }} --prefer-offline
 
       - name: Download customer web artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: web-build-customer
           path: build/web_customer
 
       - name: Download admin web artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: web-build-admin
           path: build/web_admin
@@ -1094,13 +1107,13 @@ jobs:
           fetch-depth: 1
 
       - name: Download AAB artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: customer-aab
           path: artifacts/
 
       - name: Download Admin AAB
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: admin-aab
           path: artifacts/
@@ -1149,7 +1162,7 @@ jobs:
           fetch-depth: 0 # Ensure full history for release notes
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts/
 

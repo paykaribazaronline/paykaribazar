@@ -15,12 +15,17 @@ def pubspecVersionCode = flutter.versionCode.toInteger()
 
 android {
     namespace "com.paykaribazar.app"
-    // CI runners ship Android Build Tools that match SDK 35; SDK 36 causes
-    // "Build Tools API Version Mismatch Detected" on ubuntu-24.04 GitHub
-    // Actions runners. Bump back to 36 ONLY after GitHub runners ship a
-    // matching build-tools release (track
-    // https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md).
-    compileSdk 35
+    // compileSdk 36 is required by transitive deps:
+    //   androidx.browser:browser:1.9.0
+    //   androidx.activity:activity:1.13.0
+    //   androidx.navigationevent:navigationevent-android:1.0.0
+    // (pulled in by firebase_auth, flutter_facebook_auth, etc.)
+    //
+    // The previous "Build Tools API Version Mismatch Detected" error on CI
+    // is fixed in the workflow by explicitly installing build-tools;36.0.0
+    // before the Gradle build (see .github/workflows/auto-build-and-deploy.yml
+    // build-mobile job, "Install Android SDK 36 + build-tools" step).
+    compileSdk 36
     ndkVersion = "27.2.12479018"
 
     compileOptions {
@@ -43,7 +48,7 @@ android {
     defaultConfig {
         // applicationId is defined dynamically in productFlavors
         minSdkVersion flutter.minSdkVersion // Updated to 23 as required by plugins (e.g., record_android, geolocator_android)
-        targetSdk 35 // keep in sync with compileSdk above until CI runners support SDK 36
+        targetSdk 36 // keep in sync with compileSdk above
         versionCode pubspecVersionCode
         versionName pubspecVersionName
 
