@@ -604,7 +604,7 @@ jobs:
           head: HEAD
           extra_args: --debug --only-verified
       - name: Gitleaks scan (FATAL)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: 'true'
